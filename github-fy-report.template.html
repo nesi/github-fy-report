@@ -1,0 +1,471 @@
+<title>__REPORT_TITLE__</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --series-1-wash:  #cde2fb;
+    --series-8:       #e34948;
+    --success:        #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+      --series-1-wash:  #184f95;
+      --series-8:       #e66767;
+      --success:        #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page-plane:     #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --series-1-wash:  #184f95;
+    --series-8:       #e66767;
+    --success:        #0ca30c;
+  }
+
+  .viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page-plane);
+    color: var(--text-primary);
+    padding: 32px 20px 64px;
+    max-width: 1080px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+  .viz-root * { box-sizing: border-box; }
+
+  header.report-header { margin-bottom: 28px; }
+  header.report-header h1 { font-size: 1.5rem; font-weight: 650; margin: 0 0 4px; }
+  header.report-header p { margin: 0; color: var(--text-secondary); font-size: 0.9rem; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 0.95rem;
+    font-weight: 650;
+    margin: 0 0 16px;
+    color: var(--text-primary);
+  }
+  .card .subtitle {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: -12px 0 16px;
+  }
+
+  /* stat tiles */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .stat-tile {
+    background: var(--surface-1);
+    padding: 18px 16px;
+  }
+  .stat-tile .label { font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 6px; }
+  .stat-tile .value { font-size: 1.7rem; font-weight: 650; line-height: 1.1; }
+  .stat-tile .value .sub { font-size: 1rem; font-weight: 500; color: var(--text-secondary); }
+
+  /* bar chart - monthly */
+  .bars-wrap { position: relative; }
+  .bars-grid {
+    position: relative;
+    height: 200px;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding-left: 34px;
+    border-bottom: 1px solid var(--baseline);
+  }
+  .gridlines {
+    position: absolute;
+    left: 34px; right: 0; top: 0; bottom: 0;
+    pointer-events: none;
+  }
+  .gridlines .gline {
+    position: absolute;
+    left: 0; right: 0;
+    border-top: 1px solid var(--gridline);
+  }
+  .gridlines .glabel {
+    position: absolute;
+    left: -34px;
+    width: 28px;
+    text-align: right;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    transform: translateY(-50%);
+  }
+  .bar-col {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    position: relative;
+  }
+  .bar {
+    width: 60%;
+    max-width: 24px;
+    background: var(--series-1);
+    border-radius: 4px 4px 0 0;
+    position: relative;
+    cursor: pointer;
+    transition: opacity 0.1s;
+  }
+  .bar:hover { opacity: 0.8; }
+  .bar .peak-label {
+    position: absolute;
+    top: -18px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+  .month-labels {
+    display: flex;
+    gap: 10px;
+    padding-left: 34px;
+    margin-top: 8px;
+  }
+  .month-labels span {
+    flex: 1;
+    text-align: center;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+  }
+
+  /* horizontal bar chart - repos */
+  .hbar-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 44px;
+    align-items: center;
+    gap: 10px;
+    height: 28px;
+    margin-bottom: 2px;
+  }
+  .hbar-row .repo-name {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hbar-track { position: relative; height: 100%; display: flex; align-items: center; }
+  .hbar {
+    height: 16px;
+    background: var(--series-1);
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+  }
+  .hbar-row .hbar-value {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  /* tooltip */
+  .viz-tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--text-primary);
+    color: var(--surface-1);
+    font-size: 0.75rem;
+    padding: 6px 9px;
+    border-radius: 6px;
+    z-index: 100;
+    opacity: 0;
+    transition: opacity 0.08s;
+    white-space: nowrap;
+  }
+  .viz-tooltip.show { opacity: 1; }
+
+  /* table view toggle */
+  details.table-toggle { margin-top: 14px; }
+  details.table-toggle summary {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+  details.table-toggle table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    font-size: 0.78rem;
+  }
+  details.table-toggle th, details.table-toggle td {
+    text-align: left;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--gridline);
+    font-variant-numeric: tabular-nums;
+  }
+  details.table-toggle th { color: var(--text-muted); font-weight: 600; }
+
+  /* PR table */
+  .pr-table-scroll { max-height: 420px; overflow-y: auto; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table.pr-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; min-width: 560px; }
+  table.pr-table thead th {
+    position: sticky; top: 0;
+    background: var(--surface-1);
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  table.pr-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--gridline);
+    vertical-align: top;
+  }
+  table.pr-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-secondary); }
+  table.pr-table td.repo { color: var(--text-muted); white-space: nowrap; }
+  table.pr-table a { color: var(--series-1); text-decoration: none; }
+  table.pr-table a:hover { text-decoration: underline; }
+  .add { color: var(--success); }
+  .del { color: var(--series-8); }
+
+  ul.plain-list { margin: 0; padding-left: 18px; font-size: 0.85rem; color: var(--text-secondary); }
+  ul.plain-list li { margin-bottom: 6px; }
+  ul.plain-list a { color: var(--series-1); text-decoration: none; }
+  ul.plain-list a:hover { text-decoration: underline; }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 640px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+
+  footer.report-footer {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 8px;
+  }
+</style>
+
+<div class="viz-root">
+  <header class="report-header">
+    <h1>__REPORT_TITLE__</h1>
+    <p>__REPORT_SUBTITLE__</p>
+  </header>
+
+  <div class="stat-grid" id="statGrid"></div>
+  <div style="height:20px"></div>
+
+  <div class="card">
+    <h2>Commits by month</h2>
+    <div class="subtitle">__MONTHLY_SUBTITLE__</div>
+    <div class="bars-wrap">
+      <div class="gridlines" id="gridlines"></div>
+      <div class="bars-grid" id="monthBars"></div>
+      <div class="month-labels" id="monthLabels"></div>
+    </div>
+    <details class="table-toggle">
+      <summary>View as table</summary>
+      <table id="monthTable"></table>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Commits by repository</h2>
+    <div class="subtitle">__REPO_SUBTITLE__</div>
+    <div id="repoBars"></div>
+    <details class="table-toggle">
+      <summary>View as table</summary>
+      <table id="repoTable"></table>
+    </details>
+  </div>
+
+  <div class="two-col">
+    <div class="card">
+      <h2>Reviews given to others</h2>
+      <ul class="plain-list" id="reviewsList"></ul>
+    </div>
+    <div class="card">
+      <h2>Issues opened &amp; closed</h2>
+      <ul class="plain-list" id="issuesList"></ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Merged pull requests</h2>
+    <div class="subtitle">__MERGED_SUBTITLE__</div>
+    <div class="pr-table-scroll">
+      <table class="pr-table">
+        <thead>
+          <tr><th>Merged</th><th>Repo</th><th>Title</th><th>Lines</th></tr>
+        </thead>
+        <tbody id="prTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer class="report-footer">
+    Generated from the GitHub search &amp; REST APIs (<code>gh</code> CLI) scoped to __FOOTER_SCOPE__. Commit and PR counts reflect only activity visible to the authenticated account's token scopes.
+  </footer>
+</div>
+
+<div class="viz-tooltip" id="tooltip"></div>
+
+<script>
+(function () {
+  const months = __MONTHS_JSON__;
+  const repos = __REPOS_JSON__;
+  const stats = __STATS_JSON__;
+  const reviews = __REVIEWS_JSON__;
+  const issuesOpened = __ISSUES_OPENED_JSON__;
+  const issuesClosed = __ISSUES_CLOSED_JSON__;
+  const prs = __PRS_JSON__;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  const tooltip = document.getElementById('tooltip');
+  function showTooltip(el, text) {
+    const r = el.getBoundingClientRect();
+    tooltip.textContent = text;
+    tooltip.style.left = (r.left + r.width / 2) + 'px';
+    tooltip.style.top = (r.top - 10) + 'px';
+    tooltip.style.transform = 'translate(-50%, -100%)';
+    tooltip.classList.add('show');
+  }
+  function hideTooltip() { tooltip.classList.remove('show'); }
+
+  // stat tiles (s.value may contain pre-built markup, e.g. colored +/- spans)
+  const statGrid = document.getElementById('statGrid');
+  statGrid.innerHTML = stats.map(s => `
+    <div class="stat-tile">
+      <div class="label">${esc(s.label)}</div>
+      <div class="value">${s.value}</div>
+    </div>
+  `).join('');
+
+  // monthly bar chart
+  const maxCount = Math.max(1, ...months.map(m => m.count));
+  const niceMax = Math.ceil(maxCount / 15) * 15 || 15;
+  const steps = 4;
+  const gridlines = document.getElementById('gridlines');
+  let glineHtml = '';
+  for (let i = 0; i <= steps; i++) {
+    const v = Math.round((niceMax / steps) * i);
+    const pct = (i / steps) * 100;
+    glineHtml += `<div class="gline" style="bottom:${pct}%"></div><div class="glabel" style="bottom:${pct}%">${v}</div>`;
+  }
+  gridlines.innerHTML = glineHtml;
+
+  const monthBars = document.getElementById('monthBars');
+  monthBars.innerHTML = months.map(m => {
+    const pct = niceMax ? (m.count / niceMax) * 100 : 0;
+    const isPeak = m.count === maxCount && maxCount > 0;
+    return `<div class="bar-col">
+      <div class="bar" style="height:${pct}%" data-label="${esc(m.label)}" data-count="${m.count}">
+        ${isPeak ? `<span class="peak-label">${m.count}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('monthLabels').innerHTML = months.map(m => `<span>${esc(m.label)}</span>`).join('');
+
+  monthBars.querySelectorAll('.bar').forEach(bar => {
+    bar.addEventListener('mouseenter', () => showTooltip(bar, `${bar.dataset.label}: ${bar.dataset.count} commits`));
+    bar.addEventListener('mouseleave', hideTooltip);
+  });
+
+  document.getElementById('monthTable').innerHTML = `
+    <thead><tr><th>Month</th><th>Commits</th></tr></thead>
+    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${m.count}</td></tr>`).join('')}</tbody>
+  `;
+
+  // repo bar chart
+  const repoMax = Math.max(1, ...repos.map(r => r.count));
+  const repoBars = document.getElementById('repoBars');
+  repoBars.innerHTML = repos.map(r => {
+    const pct = (r.count / repoMax) * 100;
+    return `<div class="hbar-row">
+      <div class="repo-name" title="${esc(r.name)}">${esc(r.name)}</div>
+      <div class="hbar-track"><div class="hbar" style="width:${pct}%" data-name="${esc(r.name)}" data-count="${r.count}"></div></div>
+      <div class="hbar-value">${r.count}</div>
+    </div>`;
+  }).join('');
+  repoBars.querySelectorAll('.hbar').forEach(bar => {
+    bar.addEventListener('mouseenter', () => showTooltip(bar, `${bar.dataset.name}: ${bar.dataset.count} commits`));
+    bar.addEventListener('mouseleave', hideTooltip);
+  });
+  document.getElementById('repoTable').innerHTML = `
+    <thead><tr><th>Repository</th><th>Commits</th></tr></thead>
+    <tbody>${repos.map(r => `<tr><td>${esc(r.name)}</td><td>${r.count}</td></tr>`).join('')}</tbody>
+  `;
+
+  // reviews & issues lists
+  document.getElementById('reviewsList').innerHTML = reviews.length
+    ? reviews.map(r => `<li><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}#${r.number}</a> — ${esc(r.title)}</li>`).join('')
+    : '<li>None recorded</li>';
+
+  document.getElementById('issuesList').innerHTML = `
+    <li><strong>${issuesOpened.length} opened</strong></li>
+    ${issuesOpened.map(i => `<li style="margin-left:8px">#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
+    <li style="margin-top:10px"><strong>${issuesClosed.length} closed</strong></li>
+    ${issuesClosed.map(i => `<li style="margin-left:8px">#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.date)})</span></li>`).join('')}
+  `;
+
+  // PR table
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: '2-digit' });
+  }
+  const merged = prs.slice().sort((a, b) => new Date(b.merged_at) - new Date(a.merged_at));
+  document.getElementById('prTableBody').innerHTML = merged.map(p => `
+    <tr>
+      <td class="num">${fmtDate(p.merged_at)}</td>
+      <td class="repo">${esc(p.repo)}</td>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">#${p.number}</a> ${esc(p.title)}</td>
+      <td class="num"><span class="add">+${p.additions}</span> <span class="del">−${p.deletions}</span></td>
+    </tr>
+  `).join('');
+})();
+</script>
