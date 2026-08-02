@@ -28,7 +28,7 @@ if [ $# -lt 1 ]; then
 fi
 
 HANDLE="$1"
-ORG="${2:-nesi}"
+ORG="${2:-}"
 START="${3:-}"
 END="${4:-}"
 OUTPUT="${5:-}"
