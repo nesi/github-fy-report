@@ -447,9 +447,9 @@
 
   document.getElementById('issuesList').innerHTML = `
     <li><strong>${issuesOpened.length} opened</strong></li>
-    ${issuesOpened.map(i => `<li style="margin-left:8px">#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
+    ${issuesOpened.map(i => `<li style="margin-left:8px">${esc(i.repo || '')}#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
     <li style="margin-top:10px"><strong>${issuesClosed.length} closed</strong></li>
-    ${issuesClosed.map(i => `<li style="margin-left:8px">#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.date)})</span></li>`).join('')}
+    ${issuesClosed.map(i => `<li style="margin-left:8px">${esc(i.repo || '')}#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.date)})</span></li>`).join('')}
   `;
 
   // PR table
