@@ -21,6 +21,13 @@ def load_jsonl(path):
     return items
 
 
+def day_of(ts):
+    """UTC calendar day from an ISO timestamp, or None if absent/unparseable."""
+    if not ts:
+        return None
+    return ts[:10] if len(ts) >= 10 else None
+
+
 def month_range(start, end):
     y, m = start.year, start.month
     out = []
@@ -121,6 +128,39 @@ def main():
         for i in issues_closed
     ]
 
+    # Active days: distinct UTC calendar days on which each kind of activity
+    # happened. Days are counted once per category, then unioned for the total,
+    # so a day with a commit *and* a merged PR counts once overall.
+    day_sets = {
+        "Commits": {day_of(c.get("date")) for c in commits},
+        "PRs opened": {day_of(p.get("created_at")) for p in prs},
+        "PRs merged": {day_of(p["merged_at"]) for p in merged_prs},
+        "Reviews given": {day_of(r.get("updated_at")) for r in reviews},
+        "Issues opened": {day_of(i.get("created_at")) for i in issues_opened},
+        "Issues closed": {day_of(i.get("closed_at")) for i in issues_closed},
+    }
+    day_sets = {k: {d for d in v if d} for k, v in day_sets.items()}
+
+    all_active_days = set()
+    for v in day_sets.values():
+        all_active_days |= v
+    active_days = len(all_active_days)
+
+    period_days = (end - start).days + 1
+
+    # Denominator is *working* days, not calendar days: 5 days/week over
+    # 52 weeks, less 4 weeks annual leave and 11 statutory holidays
+    # => (52 - 4) * 5 - 11 = 229 working days per year. Scaled to the
+    # length of the reporting period.
+    WORKING_DAYS_PER_YEAR = (52 - 4) * 5 - 11
+    working_days = round(period_days * WORKING_DAYS_PER_YEAR / 365) if period_days else 0
+    active_pct = round(100 * active_days / working_days) if working_days else 0
+
+    active_day_rows = [
+        {"name": label, "count": len(days)}
+        for label, days in sorted(day_sets.items(), key=lambda kv: -len(kv[1]))
+    ]
+
     stats = [
         {"label": "Commits", "value": str(len(commits))},
         {"label": "PRs opened", "value": str(len(prs))},
@@ -132,6 +172,7 @@ def main():
         )},
         {"label": "Reviews given", "value": str(len(reviews_list))},
         {"label": "Issues closed", "value": str(len(issues_closed_list))},
+        {"label": "Active days", "value": str(active_days)},
     ]
 
     start_label = start.strftime("%-d %b %Y")
@@ -164,6 +205,13 @@ def main():
         "__MONTHLY_SUBTITLE__": monthly_label,
         "__REPO_SUBTITLE__": f"{len(commits)} commits across {len(repos)} repositories",
         "__MERGED_SUBTITLE__": merged_subtitle,
+        "__ACTIVE_DAYS_SUBTITLE__": (
+            f"{active_days} distinct days with recorded activity, "
+            f"out of {working_days} working days in the period ({active_pct}%). "
+            f"Working days assume 5 days/week, less 4 weeks annual leave and "
+            f"11 statutory holidays ({WORKING_DAYS_PER_YEAR} days/year). "
+            f"Categories overlap; the total counts each day once."
+        ),
         "__FOOTER_SCOPE__": footer_scope,
         "__MONTHS_JSON__": json.dumps(months),
         "__REPOS_JSON__": json.dumps(repos),
@@ -172,6 +220,7 @@ def main():
         "__ISSUES_OPENED_JSON__": json.dumps(issues_opened_list),
         "__ISSUES_CLOSED_JSON__": json.dumps(issues_closed_list),
         "__PRS_JSON__": json.dumps(merged_prs),
+        "__ACTIVE_DAYS_JSON__": json.dumps(active_day_rows),
     }
     for key, val in replacements.items():
         html = html.replace(key, val)

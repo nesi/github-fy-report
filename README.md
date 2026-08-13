@@ -153,12 +153,32 @@ safe to email to a **pencil pusher** or attach to a performance review.
 
 Sections:
 
-- **Stat row** — commits, PRs opened, PRs merged, lines changed (+/−), reviews given, issues closed
+- **Stat row** — commits, PRs opened, PRs merged, lines changed (+/−), reviews given, issues closed, active days
 - **Commits by month** — bar chart across the range
 - **Commits by repository** — ranked, org prefix stripped
+- **Active days** — distinct days each kind of activity happened on
 - **Merged PRs** — title, repo, link, additions/deletions
 - **Reviews given** — PRs you reviewed that you did not author
 - **Issues** — opened and closed
+
+### Active days
+
+Counts distinct UTC calendar days on which something happened, per category, plus
+a headline total that counts each day **once** even if several things happened on it:
+
+```
+Active days: 48 out of 365 days in the period (13%)
+
+  Commits        37
+  Issues opened  13
+  Issues closed  11
+  PRs opened      7
+  PRs merged      6
+  Reviews given   2
+```
+
+The total sits between the largest single category and the sum of all of them —
+here 37 ≤ 48 ≤ 76.
 
 ## Progress output
 
@@ -204,6 +224,14 @@ Report written to: ./github-report-USER_NAME-2025-07-01_2026-06-30.html
 - **Search API caps at 1000 results per query.** A very busy year in a very
   busy org will truncate. Because multiple orgs are merged into one query rather
   than queried separately, adding orgs brings you closer to that cap.
+- **Active days use UTC**, not your local timezone. Late-evening NZ work lands on
+  the next UTC day, so a stretch of consecutive evenings can read as more days
+  than it felt like.
+- **Active days are a floor, not a full picture.** They cover only what the report
+  already fetches — commits, PRs opened/merged, reviews, issues. Days spent purely
+  on GitHub Actions runs, comments, discussions, or releases do not register.
+- **"Reviews given" days** inherit the `updated:` caveat above: the day is the PR's
+  last-updated day, not the day the review was actually written.
 - **Rate limits**: search is 30 req/min authenticated. Large batches may pause
   or fail — space them out.
 

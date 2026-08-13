@@ -158,17 +158,17 @@ gh api --paginate "search/commits?q=$(urlenc "author:$HANDLE$ORG_Q committer-dat
 
 echo "Fetching PRs opened..." >&2
 gh api --paginate "search/issues?q=$(urlenc "is:pr author:$HANDLE$ORG_Q created:$START..$END")&per_page=100" \
-  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, url: .html_url}' \
+  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, url: .html_url, created_at: .created_at}' \
   > "$WORKDIR/prs.jsonl"
 
 echo "Fetching reviews given..." >&2
 gh api --paginate "search/issues?q=$(urlenc "is:pr reviewed-by:$HANDLE -author:$HANDLE$ORG_Q updated:$START..$END")&per_page=100" \
-  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, url: .html_url}' \
+  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, url: .html_url, updated_at: .updated_at}' \
   > "$WORKDIR/reviews.jsonl"
 
 echo "Fetching issues opened..." >&2
 gh api --paginate "search/issues?q=$(urlenc "is:issue author:$HANDLE$ORG_Q created:$START..$END")&per_page=100" \
-  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, state: .state}' \
+  --jq '.items[] | {repo: (.repository_url | split("/")[-2:] | join("/")), number: .number, title: .title, state: .state, created_at: .created_at}' \
   > "$WORKDIR/issues_opened.jsonl"
 
 echo "Fetching issues closed..." >&2
