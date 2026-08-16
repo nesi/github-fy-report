@@ -34,9 +34,11 @@ def month_range(start, end):
 
 
 def main():
-    workdir, template_path, output_path, handle, org, start_s, end_s = sys.argv[1:8]
+    workdir, template_path, output_path, handle, org_list, start_s, end_s = sys.argv[1:8]
     start = date.fromisoformat(start_s)
     end = date.fromisoformat(end_s)
+
+    orgs = [o for o in org_list.split(",") if o]
 
     commits = load_jsonl(f"{workdir}/commits.jsonl")
     prs = load_jsonl(f"{workdir}/prs.jsonl")
@@ -45,10 +47,14 @@ def main():
     issues_closed = load_jsonl(f"{workdir}/issues_closed.jsonl")
     pr_stats = load_jsonl(f"{workdir}/pr_stats.jsonl")
 
-    org_prefix = f"{org}/"
+    # With a single org the prefix is noise; with several (or none) it is the
+    # only thing telling "nesi/docs" and "GenomicsAotearoa/docs" apart.
+    single_org_prefix = f"{orgs[0]}/" if len(orgs) == 1 else None
 
     def strip_org(repo):
-        return repo[len(org_prefix):] if repo.startswith(org_prefix) else repo
+        if single_org_prefix and repo.startswith(single_org_prefix):
+            return repo[len(single_org_prefix):]
+        return repo
 
     # months
     buckets = {ym: 0 for ym in month_range(start, end)}
@@ -97,11 +103,21 @@ def main():
         for r in reviews
     ]
     issues_opened_list = [
-        {"number": i["number"], "title": i["title"], "state": i["state"]}
+        {
+            "repo": strip_org(i.get("repo", "")),
+            "number": i["number"],
+            "title": i["title"],
+            "state": i["state"],
+        }
         for i in issues_opened
     ]
     issues_closed_list = [
-        {"number": i["number"], "title": i["title"], "date": (i["closed_at"] or "")[:10]}
+        {
+            "repo": strip_org(i.get("repo", "")),
+            "number": i["number"],
+            "title": i["title"],
+            "date": (i["closed_at"] or "")[:10],
+        }
         for i in issues_closed
     ]
 
@@ -129,13 +145,26 @@ def main():
     with open(template_path) as f:
         html = f.read()
 
+    if not orgs:
+        org_label = "all of GitHub"
+        monthly_label = "Across every repository, including personal ones"
+        footer_scope = f"author/committer:{handle} (no org filter)"
+    elif len(orgs) == 1:
+        org_label = f"{orgs[0]} org"
+        monthly_label = f"Across all {orgs[0]} repositories"
+        footer_scope = f"org:{orgs[0]}, author/committer:{handle}"
+    else:
+        org_label = f"{len(orgs)} orgs: {', '.join(orgs)}"
+        monthly_label = f"Across {', '.join(orgs)}"
+        footer_scope = " ".join(f"org:{o}" for o in orgs) + f", author/committer:{handle}"
+
     replacements = {
         "__REPORT_TITLE__": f"GitHub Activity — {handle}",
-        "__REPORT_SUBTITLE__": f"{handle} · {org} org · {start_label} – {end_label}",
-        "__MONTHLY_SUBTITLE__": f"Across all {org} repositories",
+        "__REPORT_SUBTITLE__": f"{handle} · {org_label} · {start_label} – {end_label}",
+        "__MONTHLY_SUBTITLE__": monthly_label,
         "__REPO_SUBTITLE__": f"{len(commits)} commits across {len(repos)} repositories",
         "__MERGED_SUBTITLE__": merged_subtitle,
-        "__FOOTER_SCOPE__": f"org:{org}, author/committer:{handle}",
+        "__FOOTER_SCOPE__": footer_scope,
         "__MONTHS_JSON__": json.dumps(months),
         "__REPOS_JSON__": json.dumps(repos),
         "__STATS_JSON__": json.dumps(stats),
