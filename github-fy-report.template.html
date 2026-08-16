@@ -320,6 +320,16 @@
     </details>
   </div>
 
+  <div class="card">
+    <h2>Active days</h2>
+    <div class="subtitle">__ACTIVE_DAYS_SUBTITLE__</div>
+    <div id="activeDayBars"></div>
+    <details class="table-toggle">
+      <summary>View as table</summary>
+      <table id="activeDayTable"></table>
+    </details>
+  </div>
+
   <div class="two-col">
     <div class="card">
       <h2>Reviews given to others</h2>
@@ -360,6 +370,7 @@
   const issuesOpened = __ISSUES_OPENED_JSON__;
   const issuesClosed = __ISSUES_CLOSED_JSON__;
   const prs = __PRS_JSON__;
+  const activeDays = __ACTIVE_DAYS_JSON__;
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -438,6 +449,26 @@
   document.getElementById('repoTable').innerHTML = `
     <thead><tr><th>Repository</th><th>Commits</th></tr></thead>
     <tbody>${repos.map(r => `<tr><td>${esc(r.name)}</td><td>${r.count}</td></tr>`).join('')}</tbody>
+  `;
+
+  // active-days bar chart (days on which each activity type occurred)
+  const dayMax = Math.max(1, ...activeDays.map(d => d.count));
+  const dayBars = document.getElementById('activeDayBars');
+  dayBars.innerHTML = activeDays.map(d => {
+    const pct = (d.count / dayMax) * 100;
+    return `<div class="hbar-row">
+      <div class="repo-name" title="${esc(d.name)}">${esc(d.name)}</div>
+      <div class="hbar-track"><div class="hbar" style="width:${pct}%" data-name="${esc(d.name)}" data-count="${d.count}"></div></div>
+      <div class="hbar-value">${d.count}</div>
+    </div>`;
+  }).join('');
+  dayBars.querySelectorAll('.hbar').forEach(bar => {
+    bar.addEventListener('mouseenter', () => showTooltip(bar, `${bar.dataset.name}: ${bar.dataset.count} days`));
+    bar.addEventListener('mouseleave', hideTooltip);
+  });
+  document.getElementById('activeDayTable').innerHTML = `
+    <thead><tr><th>Activity</th><th>Days</th></tr></thead>
+    <tbody>${activeDays.map(d => `<tr><td>${esc(d.name)}</td><td>${d.count}</td></tr>`).join('')}</tbody>
   `;
 
   // reviews & issues lists
