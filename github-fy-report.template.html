@@ -12,6 +12,7 @@
     --border:         rgba(11,11,11,0.10);
     --series-1:       #2a78d6;
     --series-1-wash:  #cde2fb;
+    --series-2:       #eb6834;
     --series-8:       #e34948;
     --success:        #006300;
   }
@@ -28,6 +29,7 @@
       --border:         rgba(255,255,255,0.10);
       --series-1:       #3987e5;
       --series-1-wash:  #184f95;
+      --series-2:       #d95926;
       --series-8:       #e66767;
       --success:        #0ca30c;
     }
@@ -44,6 +46,7 @@
     --border:         rgba(255,255,255,0.10);
     --series-1:       #3987e5;
     --series-1-wash:  #184f95;
+    --series-2:       #d95926;
     --series-8:       #e66767;
     --success:        #0ca30c;
   }
@@ -138,17 +141,24 @@
     justify-content: center;
     position: relative;
   }
-  .bar {
+  .bar-stack {
     width: 60%;
     max-width: 24px;
-    background: var(--series-1);
-    border-radius: 4px 4px 0 0;
+    height: 100%;
     position: relative;
+  }
+  .bar-seg {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: var(--series-1);
     cursor: pointer;
     transition: opacity 0.1s;
   }
-  .bar:hover { opacity: 0.8; }
-  .bar .peak-label {
+  .bar-seg:hover { opacity: 0.8; }
+  .bar-seg.rounded { border-radius: 4px 4px 0 0; }
+  .bar-seg.gitlab { background: var(--series-2); }
+  .peak-label {
     position: absolute;
     top: -18px;
     left: 50%;
@@ -157,6 +167,27 @@
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
+  }
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+  }
+  .chart-legend .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .chart-legend .swatch.github { background: var(--series-1); }
+  .chart-legend .swatch.gitlab { background: var(--series-2); }
+  .platform-tag {
+    font-size: 0.72rem;
+    color: var(--text-muted);
   }
   .month-labels {
     display: flex;
@@ -299,6 +330,7 @@
   <div class="card">
     <h2>Commits by month</h2>
     <div class="subtitle">__MONTHLY_SUBTITLE__</div>
+    <div class="chart-legend" id="monthLegend" style="display:none"></div>
     <div class="bars-wrap">
       <div class="gridlines" id="gridlines"></div>
       <div class="bars-grid" id="monthBars"></div>
@@ -342,12 +374,12 @@
   </div>
 
   <div class="card">
-    <h2>Merged pull requests</h2>
+    <h2>__MERGED_CARD_TITLE__</h2>
     <div class="subtitle">__MERGED_SUBTITLE__</div>
     <div class="pr-table-scroll">
       <table class="pr-table">
         <thead>
-          <tr><th>Merged</th><th>Repo</th><th>Title</th><th>Lines</th></tr>
+          <tr id="prTableHead"><th>Merged</th><th>Repo</th><th>Title</th><th>Lines</th></tr>
         </thead>
         <tbody id="prTableBody"></tbody>
       </table>
@@ -355,7 +387,7 @@
   </div>
 
   <footer class="report-footer">
-    Generated from the GitHub search &amp; REST APIs (<code>gh</code> CLI) scoped to __FOOTER_SCOPE__. Commit and PR counts reflect only activity visible to the authenticated account's token scopes.
+    __FOOTER_TEXT__
   </footer>
 </div>
 
@@ -371,6 +403,7 @@
   const issuesClosed = __ISSUES_CLOSED_JSON__;
   const prs = __PRS_JSON__;
   const activeDays = __ACTIVE_DAYS_JSON__;
+  const gitlabEnabled = __GITLAB_ENABLED__;
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -396,8 +429,9 @@
     </div>
   `).join('');
 
-  // monthly bar chart
-  const maxCount = Math.max(1, ...months.map(m => m.count));
+  // monthly bar chart (stacked GitHub/GitLab segments when GitLab is enabled)
+  const monthTotal = m => m.github + m.gitlab;
+  const maxCount = Math.max(1, ...months.map(monthTotal));
   const niceMax = Math.ceil(maxCount / 15) * 15 || 15;
   const steps = 4;
   const gridlines = document.getElementById('gridlines');
@@ -409,26 +443,46 @@
   }
   gridlines.innerHTML = glineHtml;
 
+  const monthLegend = document.getElementById('monthLegend');
+  if (gitlabEnabled) {
+    monthLegend.style.display = 'flex';
+    monthLegend.innerHTML = `
+      <span><span class="swatch github"></span>GitHub</span>
+      <span><span class="swatch gitlab"></span>GitLab</span>
+    `;
+  }
+
   const monthBars = document.getElementById('monthBars');
   monthBars.innerHTML = months.map(m => {
-    const pct = niceMax ? (m.count / niceMax) * 100 : 0;
-    const isPeak = m.count === maxCount && maxCount > 0;
+    const total = monthTotal(m);
+    const isPeak = total === maxCount && maxCount > 0;
+    const ghPct = niceMax ? (m.github / niceMax) * 100 : 0;
+    const glPct = niceMax ? (m.gitlab / niceMax) * 100 : 0;
+    const ghTop = m.gitlab === 0;
+    const tip = gitlabEnabled
+      ? `${m.label}: ${total} commits (${m.github} GitHub, ${m.gitlab} GitLab)`
+      : `${m.label}: ${total} commits`;
     return `<div class="bar-col">
-      <div class="bar" style="height:${pct}%" data-label="${esc(m.label)}" data-count="${m.count}">
-        ${isPeak ? `<span class="peak-label">${m.count}</span>` : ''}
+      <div class="bar-stack" data-tip="${esc(tip)}">
+        ${isPeak ? `<span class="peak-label">${total}</span>` : ''}
+        <div class="bar-seg${ghTop ? ' rounded' : ''}" style="bottom:0; height:${ghPct}%"></div>
+        ${m.gitlab > 0 ? `<div class="bar-seg gitlab rounded" style="bottom:${ghPct}%; height:${glPct}%"></div>` : ''}
       </div>
     </div>`;
   }).join('');
   document.getElementById('monthLabels').innerHTML = months.map(m => `<span>${esc(m.label)}</span>`).join('');
 
-  monthBars.querySelectorAll('.bar').forEach(bar => {
-    bar.addEventListener('mouseenter', () => showTooltip(bar, `${bar.dataset.label}: ${bar.dataset.count} commits`));
-    bar.addEventListener('mouseleave', hideTooltip);
+  monthBars.querySelectorAll('.bar-stack').forEach(stack => {
+    stack.addEventListener('mouseenter', () => showTooltip(stack, stack.dataset.tip));
+    stack.addEventListener('mouseleave', hideTooltip);
   });
 
-  document.getElementById('monthTable').innerHTML = `
+  document.getElementById('monthTable').innerHTML = gitlabEnabled ? `
+    <thead><tr><th>Month</th><th>GitHub</th><th>GitLab</th><th>Total</th></tr></thead>
+    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${m.github}</td><td>${m.gitlab}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
+  ` : `
     <thead><tr><th>Month</th><th>Commits</th></tr></thead>
-    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${m.count}</td></tr>`).join('')}</tbody>
+    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
   `;
 
   // repo bar chart
@@ -472,29 +526,36 @@
   `;
 
   // reviews & issues lists
+  const platformTag = p => gitlabEnabled ? `<span class="platform-tag">[${p === 'gitlab' ? 'GitLab' : 'GitHub'}]</span> ` : '';
+  const refOf = item => `${item.ref_prefix || '#'}${item.number}`;
+
   document.getElementById('reviewsList').innerHTML = reviews.length
-    ? reviews.map(r => `<li><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}#${r.number}</a> — ${esc(r.title)}</li>`).join('')
+    ? reviews.map(r => `<li>${platformTag(r.platform)}<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}${refOf(r)}</a> — ${esc(r.title)}</li>`).join('')
     : '<li>None recorded</li>';
 
   document.getElementById('issuesList').innerHTML = `
     <li><strong>${issuesOpened.length} opened</strong></li>
-    ${issuesOpened.map(i => `<li style="margin-left:8px">${esc(i.repo || '')}#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
+    ${issuesOpened.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
     <li style="margin-top:10px"><strong>${issuesClosed.length} closed</strong></li>
-    ${issuesClosed.map(i => `<li style="margin-left:8px">${esc(i.repo || '')}#${i.number} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.date)})</span></li>`).join('')}
+    ${issuesClosed.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc((i.closed_at || '').slice(0, 10))})</span></li>`).join('')}
   `;
 
-  // PR table
+  // PR/MR table
   function fmtDate(iso) {
     if (!iso) return '—';
     const d = new Date(iso);
     return d.toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: '2-digit' });
   }
+  if (gitlabEnabled) {
+    document.getElementById('prTableHead').innerHTML = '<th>Merged</th><th>Platform</th><th>Repo</th><th>Title</th><th>Lines</th>';
+  }
   const merged = prs.slice().sort((a, b) => new Date(b.merged_at) - new Date(a.merged_at));
   document.getElementById('prTableBody').innerHTML = merged.map(p => `
     <tr>
       <td class="num">${fmtDate(p.merged_at)}</td>
+      ${gitlabEnabled ? `<td class="repo">${p.platform === 'gitlab' ? 'GitLab' : 'GitHub'}</td>` : ''}
       <td class="repo">${esc(p.repo)}</td>
-      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">#${p.number}</a> ${esc(p.title)}</td>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${refOf(p)}</a> ${esc(p.title)}</td>
       <td class="num"><span class="add">+${p.additions}</span> <span class="del">−${p.deletions}</span></td>
     </tr>
   `).join('');

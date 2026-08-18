@@ -1,27 +1,32 @@
 # github-fy-report
 
-I got bored and got Claude to create this thing, mainly because doing it myself did not give me joy.
-So if you need to provide metrics for pencil pushers, here ya go.
-
-Generates a self-contained HTML report of one GitHub user's activity across one or
-more orgs over a date range: commits per month, commits per repo, merged PRs with
-line counts, reviews given, and issues opened/closed.
+Generates a self-contained HTML report of one person's activity across one or
+more GitHub orgs — and, optionally, GitLab groups — over a date range: commits
+per month, commits per repo, merged PRs/MRs with line counts, reviews given,
+and issues opened/closed.
 
 ## Requirements
 
 - [`gh`](https://cli.github.com/) — authenticated (`gh auth login`)
 - `python3` — stdlib only, no pip installs
+- [`glab`](https://gitlab.com/gitlab-org/cli) — authenticated (`glab auth login`) —
+  **only** if you pass `--gitlab-group`
 
-No `jq` needed. JSON filtering uses `gh --jq` (built into the `gh` binary);
-everything else is plain Python.
+No `jq` needed. JSON filtering uses `gh --jq` (built into the `gh` binary) on the
+GitHub side; `glab api` has no `--jq` equivalent, so the GitLab side pipes through
+`github-fy-report-gitlab-fetch.py` instead. Everything else is plain Python.
 
 ## Usage
 
 ```
 ./github-fy-report.sh <github-handle> <org-scope> [start-date] [end-date] [output-file]
+                       [--gitlab-user USER] [--gitlab-group SCOPE]
 ```
 
-Arguments are **positional** — to set a later one you must supply all earlier ones.
+The five GitHub arguments are **positional** — to set a later one you must supply
+all earlier ones. The two `--gitlab-*` flags are optional and can go anywhere on
+the command line; omit `--gitlab-group` entirely for a GitHub-only report (the
+original, unchanged behaviour).
 
 | Arg | Required | Default |
 |-----|----------|---------|
@@ -30,6 +35,8 @@ Arguments are **positional** — to set a later one you must supply all earlier 
 | `start-date` | no | 1 Jul of the most recently completed Jul–Jun financial year |
 | `end-date` | no | 30 Jun of that same FY |
 | `output-file` | no | `./github-report-<handle>-<start>_<end>.html` |
+| `--gitlab-user` | no | same as `github-handle` |
+| `--gitlab-group` | no | GitLab is skipped entirely if omitted |
 
 Dates are ISO `YYYY-MM-DD`. The date range is inclusive.
 
@@ -58,6 +65,37 @@ Checking org access...
 
 For a SAML-protected org, authorise your token at
 <https://github.com/settings/tokens> and re-run.
+
+### GitLab scope
+
+Pass `--gitlab-group` to add GitLab data alongside GitHub. `--gitlab-group` takes
+the same three forms as `org-scope`, but for GitLab **groups** (GitLab's rough
+equivalent of a GitHub org):
+
+| Value | Meaning |
+|-------|---------|
+| `nesi1` | one group — subgroups are included automatically |
+| `nesi1,other-group` | several groups, queried independently and merged |
+| `all` | every **top-level** group you belong to, discovered automatically (subgroups of those are covered for free, so they're not queried again separately) |
+| `any` | no group filter at all — every project the token can see |
+
+`--gitlab-user` defaults to `github-handle` — set it explicitly if your GitLab
+username differs from your GitHub one.
+
+Like GitHub orgs, each requested group is probed and skipped with a warning if
+the token can't reach it:
+
+```
+Checking GitLab group access...
+  Skipping 'some-group': not accessible with this token (no such group, or no access).
+```
+
+When GitLab is included, the report becomes platform-unified rather than two
+separate reports stitched together: one "Commits" stat, one monthly chart (GitHub
+and GitLab stacked as two colours, with a legend), one ranked repo list (GitLab
+rows tagged `[GitLab]`), and one merged PRs/MRs table with a Platform column.
+GitLab issues/MRs use `!`/`#` the way GitLab itself does, not GitHub's `#` for
+everything.
 
 ### Examples
 
@@ -132,6 +170,24 @@ for y in 2021 2022 2023 2024 2025; do
 done
 ```
 
+GitHub + GitLab combined, one group:
+
+```bash
+./github-fy-report.sh USER_NAME nesi 2025-07-01 2026-06-30 --gitlab-group nesi1
+```
+
+GitHub + GitLab, different username on GitLab, several groups:
+
+```bash
+./github-fy-report.sh USER_NAME nesi --gitlab-user gitlab-handle --gitlab-group nesi1,other-group
+```
+
+GitHub + every GitLab group you belong to:
+
+```bash
+./github-fy-report.sh USER_NAME nesi --gitlab-group all
+```
+
 Run from anywhere — the script locates its own template:
 
 ```bash
@@ -153,12 +209,12 @@ safe to email to a **pencil pusher** or attach to a performance review.
 
 Sections:
 
-- **Stat row** — commits, PRs opened, PRs merged, lines changed (+/−), reviews given, issues closed, active days
-- **Commits by month** — bar chart across the range
-- **Commits by repository** — ranked, org prefix stripped
+- **Stat row** — commits, PRs/MRs opened, PRs/MRs merged, lines changed (+/−), reviews given, issues closed, active days
+- **Commits by month** — bar chart across the range (stacked GitHub/GitLab when GitLab is included)
+- **Commits by repository** — ranked, org prefix stripped (GitLab rows tagged `[GitLab]` when included)
 - **Active days** — distinct days each kind of activity happened on
-- **Merged PRs** — title, repo, link, additions/deletions
-- **Reviews given** — PRs you reviewed that you did not author
+- **Merged PRs/MRs** — title, repo, link, additions/deletions, platform (when GitLab is included)
+- **Reviews given** — PRs/MRs you reviewed that you did not author
 - **Issues** — opened and closed
 
 ### Active days
@@ -180,6 +236,11 @@ Active days: 48 out of 365 days in the period (13%)
 The total sits between the largest single category and the sum of all of them —
 here 37 ≤ 48 ≤ 76.
 
+When GitLab is included, `Commits`, `PRs opened`, and `PRs merged` fold in GitLab
+activity too (relabelled `PRs/MRs opened` / `PRs/MRs merged`) rather than getting
+their own separate rows — a day with a GitHub commit and a GitLab commit still
+counts once for `Commits`.
+
 ## Progress output
 
 Everything the script prints goes to stderr, so you can watch it and still redirect
@@ -198,6 +259,22 @@ Fetching issues closed...
 Fetching line-change stats for 42 PR(s)...
 Aggregating and rendering report...
 Report written to: ./github-report-USER_NAME-2025-07-01_2026-06-30.html
+```
+
+With `--gitlab-group`, a second block of GitLab-side steps runs after the GitHub
+fetches, and its own line-change stage at the end:
+
+```
+Resolving GitLab user 'USER_NAME'...
+Checking GitLab group access...
+Resolving GitLab project scope...
+Fetching GitLab push events...
+Resolving GitLab project paths for push events...
+Fetching GitLab MRs opened...
+Fetching GitLab reviews given...
+Fetching GitLab issues opened...
+Fetching GitLab issues closed...
+Fetching line-change stats for 5 GitLab MR(s)...
 ```
 
 ## Caveats
@@ -235,13 +312,59 @@ Report written to: ./github-report-USER_NAME-2025-07-01_2026-06-30.html
 - **Rate limits**: search is 30 req/min authenticated. Large batches may pause
   or fail — space them out.
 
+### GitLab-specific caveats
+
+GitLab's API shape is different enough from GitHub's search API that the GitLab
+side works, but with some real gaps worth knowing about:
+
+- **Commits come from the Events API, not a commit search.** GitLab has no
+  cross-project "search commits by author + date" endpoint. Each push event
+  carries a *commit count* for that push (`push_data.commit_count`), attributed
+  to the push's timestamp — not the commit's own date. A force-push or a
+  multi-commit push lands as one bucketed count on one day, not several. This
+  is the same *kind* of imprecision as GitHub's committer-date caveat above, just
+  coarser.
+- **`--gitlab-group` scoping only restricts commits/pushes; MRs and issues are
+  restricted at the API level** by querying `groups/:id/merge_requests` and
+  `groups/:id/issues` directly (which already cover subgroups), so those are
+  exact. Push events have no group-scoped endpoint, so they're fetched
+  unfiltered per-user and then filtered locally against the group's project
+  list — an extra resolution step, not a precision loss.
+- **GitLab issue "closed" search ignores `closed_after`/`closed_before`.**
+  Those query parameters are silently no-ops server-side (confirmed against a
+  live instance, not assumed from docs). The fetch is bounded by
+  `updated_after`/`updated_before` instead — a reasonable proxy, since an
+  issue's `updated_at` matches its `closed_at` unless it was touched again
+  later — and the renderer re-checks the exact `closed_at` date client-side.
+  An issue closed in-window but edited again after the window could still be
+  missed if that later edit falls outside the `updated_after`/`before` bound
+  used for the fetch.
+- **"Issues closed" covers authored-by-you or assigned-to-you issues**, queried
+  separately and merged — GitLab's issues API has no single filter equivalent
+  to GitHub's `involves:` (which also catches issues you only commented on).
+- **Lines changed for GitLab MRs come from counting diff lines**, not a
+  ready-made stat. GitLab's merge request list/show endpoints don't return
+  additions/deletions the way GitHub's PR object does, so each merged MR gets
+  an extra `/merge_requests/:iid/changes` call, and `+`/`-` lines in the
+  returned unified diff are counted directly. Binary file changes contribute
+  nothing (no text lines to count).
+- **A GitLab group query call is needed per group**, unlike GitHub's `org:a
+  org:b` OR'd into one search. `all` collapses to top-level groups specifically
+  to keep this from multiplying — a group and all its subgroups cost one call
+  each fetch type, not one per subgroup.
+- **`reviewer_username` reflects GitLab's "reviewer" assignment feature**, not
+  free-text review comments. If your team doesn't use formal MR reviewer
+  assignment, "reviews given" on the GitLab side will under-count relative to
+  what actually happened in the MR discussion.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `github-fy-report.sh` | Entry point — arg parsing, FY defaults, `gh` queries |
-| `github-fy-report-render.py` | Aggregates the fetched JSONL into the template |
+| `github-fy-report.sh` | Entry point — arg parsing, FY defaults, `gh` and `glab` queries |
+| `github-fy-report-gitlab-fetch.py` | JSON glue for the GitLab side (`glab api` has no `--jq`) |
+| `github-fy-report-render.py` | Merges GitHub + GitLab data and fills in the template |
 | `github-fy-report.template.html` | Self-contained HTML/CSS/JS with `__PLACEHOLDER__` tokens |
 
-The Python renderer is invoked by the shell script and expects a scratch workdir —
-not meant to be run standalone.
+The two Python scripts are invoked by the shell script and expect a scratch
+workdir — not meant to be run standalone.

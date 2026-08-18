@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Aggregate GitHub activity data fetched by github-fy-report.sh into the HTML template.
+"""Aggregate GitHub (+ optional GitLab) activity data fetched by
+github-fy-report.sh into the HTML template.
 
 Invoked by github-fy-report.sh — not meant to be run standalone.
 """
@@ -21,6 +22,19 @@ def load_jsonl(path):
     return items
 
 
+def load_ids(path):
+    ids = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    ids.add(int(line))
+    except FileNotFoundError:
+        pass
+    return ids
+
+
 def day_of(ts):
     """UTC calendar day from an ISO timestamp, or None if absent/unparseable."""
     if not ts:
@@ -40,13 +54,37 @@ def month_range(start, end):
     return out
 
 
+def repo_path_from_web_url(url):
+    """'https://gitlab.com/group/sub/project/-/merge_requests/3' -> 'group/sub/project'."""
+    without_scheme = url.split("://", 1)[-1]
+    without_host = without_scheme.split("/", 1)[-1]
+    return without_host.split("/-/", 1)[0]
+
+
+def dedupe(rows, key):
+    seen = set()
+    out = []
+    for r in rows:
+        k = key(r)
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return out
+
+
 def main():
-    workdir, template_path, output_path, handle, org_list, start_s, end_s = sys.argv[1:8]
+    (workdir, template_path, output_path, handle, org_list, start_s, end_s,
+     gitlab_enabled_s, gitlab_user, gl_group_list, gl_any_s) = sys.argv[1:12]
+
     start = date.fromisoformat(start_s)
     end = date.fromisoformat(end_s)
+    gitlab_enabled = gitlab_enabled_s == "true"
+    gl_any = gl_any_s == "true"
 
     orgs = [o for o in org_list.split(",") if o]
+    gl_groups = [g for g in gl_group_list.split(",") if g]
 
+    # --- load GitHub data -----------------------------------------------------
     commits = load_jsonl(f"{workdir}/commits.jsonl")
     prs = load_jsonl(f"{workdir}/prs.jsonl")
     reviews = load_jsonl(f"{workdir}/reviews.jsonl")
@@ -54,8 +92,6 @@ def main():
     issues_closed = load_jsonl(f"{workdir}/issues_closed.jsonl")
     pr_stats = load_jsonl(f"{workdir}/pr_stats.jsonl")
 
-    # With a single org the prefix is noise; with several (or none) it is the
-    # only thing telling "nesi/docs" and "GenomicsAotearoa/docs" apart.
     single_org_prefix = f"{orgs[0]}/" if len(orgs) == 1 else None
 
     def strip_org(repo):
@@ -63,38 +99,24 @@ def main():
             return repo[len(single_org_prefix):]
         return repo
 
-    # months
-    buckets = {ym: 0 for ym in month_range(start, end)}
-    for c in commits:
-        d = datetime.fromisoformat(c["date"].replace("Z", "+00:00")).date()
-        ym = (d.year, d.month)
-        if ym in buckets:
-            buckets[ym] += 1
-    months = [
-        {"label": date(y, m, 1).strftime("%b %y"), "count": buckets[(y, m)]}
-        for (y, m) in sorted(buckets)
+    # unified commit-like rows: {platform, repo, date, count}
+    commit_rows = [
+        {"platform": "github", "repo": strip_org(c["repo"]), "date": c["date"], "count": 1}
+        for c in commits
     ]
 
-    # repos by commit count
-    repo_counts = {}
-    for c in commits:
-        name = strip_org(c["repo"])
-        repo_counts[name] = repo_counts.get(name, 0) + 1
-    repos = [
-        {"name": name, "count": count}
-        for name, count in sorted(repo_counts.items(), key=lambda kv: -kv[1])
-    ]
-
-    # join PR metadata with stats, keep merged only
+    # join GitHub PR metadata with stats, keep merged only
     stats_by_key = {(s["repo"], s["number"]): s for s in pr_stats}
-    merged_prs = []
+    merged_items = []
     for p in prs:
         key = (p["repo"], p["number"])
         s = stats_by_key.get(key)
         if s and s.get("merged_at"):
-            merged_prs.append({
+            merged_items.append({
+                "platform": "github",
                 "repo": strip_org(p["repo"]),
                 "number": p["number"],
+                "ref_prefix": "#",
                 "title": p["title"],
                 "url": p["url"],
                 "merged_at": s["merged_at"],
@@ -102,42 +124,150 @@ def main():
                 "deletions": s.get("deletions", 0),
             })
 
-    additions_sum = sum(p["additions"] for p in merged_prs)
-    deletions_sum = sum(p["deletions"] for p in merged_prs)
-
-    reviews_list = [
-        {"repo": strip_org(r["repo"]), "number": r["number"], "title": r["title"], "url": r["url"]}
+    review_items = [
+        {"platform": "github", "repo": strip_org(r["repo"]), "number": r["number"],
+         "ref_prefix": "#", "title": r["title"], "url": r["url"],
+         "updated_at": r.get("updated_at")}
         for r in reviews
     ]
-    issues_opened_list = [
-        {
-            "repo": strip_org(i.get("repo", "")),
-            "number": i["number"],
-            "title": i["title"],
-            "state": i["state"],
-        }
+    issues_opened_items = [
+        {"platform": "github", "repo": strip_org(i.get("repo", "")), "number": i["number"],
+         "ref_prefix": "#", "title": i["title"], "state": i["state"],
+         "created_at": i.get("created_at")}
         for i in issues_opened
     ]
-    issues_closed_list = [
-        {
-            "repo": strip_org(i.get("repo", "")),
-            "number": i["number"],
-            "title": i["title"],
-            "date": (i["closed_at"] or "")[:10],
-        }
+    issues_closed_items = [
+        {"platform": "github", "repo": strip_org(i.get("repo", "")), "number": i["number"],
+         "ref_prefix": "#", "title": i["title"], "closed_at": i.get("closed_at")}
         for i in issues_closed
     ]
 
-    # Active days: distinct UTC calendar days on which each kind of activity
-    # happened. Days are counted once per category, then unioned for the total,
-    # so a day with a commit *and* a merged PR counts once overall.
+    # --- load + fold in GitLab data --------------------------------------------
+    if gitlab_enabled:
+        allowed_ids = load_ids(f"{workdir}/gitlab_allowed_ids.txt")
+        project_paths = {
+            p["project_id"]: p["path"] for p in load_jsonl(f"{workdir}/gitlab_project_paths.jsonl")
+        }
+        pushes = load_jsonl(f"{workdir}/gitlab_pushes_raw.jsonl")
+        if not gl_any:
+            pushes = [p for p in pushes if p["project_id"] in allowed_ids]
+        for p in pushes:
+            repo = project_paths.get(p["project_id"], f"project {p['project_id']}")
+            commit_rows.append({
+                "platform": "gitlab", "repo": repo, "date": p["date"], "count": p["count"],
+            })
+
+        gl_mrs = dedupe(load_jsonl(f"{workdir}/gitlab_mrs_raw.jsonl"),
+                        key=lambda m: (m["project_id"], m["iid"]))
+        gl_reviews = dedupe(load_jsonl(f"{workdir}/gitlab_reviews_raw.jsonl"),
+                            key=lambda m: (m["project_id"], m["iid"]))
+        gl_issues_opened = dedupe(load_jsonl(f"{workdir}/gitlab_issues_opened_raw.jsonl"),
+                                  key=lambda i: (i["project_id"], i["iid"]))
+        gl_issues_closed = dedupe(load_jsonl(f"{workdir}/gitlab_issues_closed_raw.jsonl"),
+                                  key=lambda i: (i["project_id"], i["iid"]))
+        gl_mr_stats = {
+            (s["project_id"], s["iid"]): s for s in load_jsonl(f"{workdir}/gitlab_mr_stats.jsonl")
+        }
+
+        gl_reviews = [m for m in gl_reviews if m.get("author") != gitlab_user]
+
+        for m in gl_mrs:
+            if not m.get("merged_at"):
+                continue
+            s = gl_mr_stats.get((m["project_id"], m["iid"]), {})
+            merged_items.append({
+                "platform": "gitlab",
+                "repo": repo_path_from_web_url(m["web_url"]),
+                "number": m["iid"],
+                "ref_prefix": "!",
+                "title": m["title"],
+                "url": m["web_url"],
+                "merged_at": m["merged_at"],
+                "additions": s.get("additions", 0),
+                "deletions": s.get("deletions", 0),
+            })
+
+        for m in gl_reviews:
+            review_items.append({
+                "platform": "gitlab",
+                "repo": repo_path_from_web_url(m["web_url"]),
+                "number": m["iid"],
+                "ref_prefix": "!",
+                "title": m["title"],
+                "url": m["web_url"],
+                "updated_at": m.get("created_at"),
+            })
+
+        for i in gl_issues_opened:
+            issues_opened_items.append({
+                "platform": "gitlab",
+                "repo": repo_path_from_web_url(i["web_url"]),
+                "number": i["iid"],
+                "ref_prefix": "#",
+                "title": i["title"],
+                "state": "open" if i["state"] == "opened" else i["state"],
+                "created_at": i.get("created_at"),
+            })
+
+        for i in gl_issues_closed:
+            issues_closed_items.append({
+                "platform": "gitlab",
+                "repo": repo_path_from_web_url(i["web_url"]),
+                "number": i["iid"],
+                "ref_prefix": "#",
+                "title": i["title"],
+                "closed_at": i.get("closed_at"),
+            })
+
+        # closed_after/closed_before aren't honoured server-side by GitLab's
+        # issues API, so the fetch is bounded by updated_after/before instead
+        # and the exact [start, end] window on closed_at is enforced here.
+        issues_closed_items = [
+            i for i in issues_closed_items
+            if i["platform"] != "gitlab" or (start_s <= (day_of(i.get("closed_at")) or "") <= end_s)
+        ]
+        issues_closed_items = dedupe(issues_closed_items, key=lambda i: (i["platform"], i["repo"], i["number"]))
+
+    # --- months (per-platform, for the stacked chart) --------------------------
+    buckets = {ym: {"github": 0, "gitlab": 0} for ym in month_range(start, end)}
+    for c in commit_rows:
+        d = datetime.fromisoformat(c["date"].replace("Z", "+00:00")).date()
+        ym = (d.year, d.month)
+        if ym in buckets:
+            buckets[ym][c["platform"]] += c["count"]
+    months = [
+        {"label": date(y, m, 1).strftime("%b %y"), "github": buckets[(y, m)]["github"],
+         "gitlab": buckets[(y, m)]["gitlab"]}
+        for (y, m) in sorted(buckets)
+    ]
+
+    # --- repos by commit count --------------------------------------------------
+    repo_counts = {}
+    for c in commit_rows:
+        name = f"[{'GitLab' if c['platform'] == 'gitlab' else 'GitHub'}] {c['repo']}" if gitlab_enabled else c["repo"]
+        repo_counts[name] = repo_counts.get(name, 0) + c["count"]
+    repos = [
+        {"name": name, "count": count}
+        for name, count in sorted(repo_counts.items(), key=lambda kv: -kv[1])
+    ]
+
+    total_commits = sum(c["count"] for c in commit_rows)
+    additions_sum = sum(p["additions"] for p in merged_items)
+    deletions_sum = sum(p["deletions"] for p in merged_items)
+
+    # --- active days -------------------------------------------------------------
+    # Distinct UTC calendar days on which each kind of activity happened, unioned
+    # across platforms per category, then unioned across categories for the total.
     day_sets = {
-        "Commits": {day_of(c.get("date")) for c in commits},
-        "PRs opened": {day_of(p.get("created_at")) for p in prs},
-        "PRs merged": {day_of(p["merged_at"]) for p in merged_prs},
-        "Reviews given": {day_of(r.get("updated_at")) for r in reviews},
-        "Issues opened": {day_of(i.get("created_at")) for i in issues_opened},
-        "Issues closed": {day_of(i.get("closed_at")) for i in issues_closed},
+        "Commits": {day_of(c.get("date")) for c in commit_rows},
+        ("PRs/MRs opened" if gitlab_enabled else "PRs opened"):
+            {day_of(p.get("created_at")) for p in prs} |
+            ({day_of(m.get("created_at")) for m in gl_mrs} if gitlab_enabled else set()),
+        ("PRs/MRs merged" if gitlab_enabled else "PRs merged"):
+            {day_of(p["merged_at"]) for p in merged_items},
+        "Reviews given": {day_of(r.get("updated_at")) for r in review_items},
+        "Issues opened": {day_of(i.get("created_at")) for i in issues_opened_items},
+        "Issues closed": {day_of(i.get("closed_at")) for i in issues_closed_items},
     }
     day_sets = {k: {d for d in v if d} for k, v in day_sets.items()}
 
@@ -147,11 +277,6 @@ def main():
     active_days = len(all_active_days)
 
     period_days = (end - start).days + 1
-
-    # Denominator is *working* days, not calendar days: 5 days/week over
-    # 52 weeks, less 4 weeks annual leave and 11 statutory holidays
-    # => (52 - 4) * 5 - 11 = 229 working days per year. Scaled to the
-    # length of the reporting period.
     WORKING_DAYS_PER_YEAR = (52 - 4) * 5 - 11
     working_days = round(period_days * WORKING_DAYS_PER_YEAR / 365) if period_days else 0
     active_pct = round(100 * active_days / working_days) if working_days else 0
@@ -161,25 +286,26 @@ def main():
         for label, days in sorted(day_sets.items(), key=lambda kv: -len(kv[1]))
     ]
 
+    pr_label = "PRs/MRs" if gitlab_enabled else "PRs"
     stats = [
-        {"label": "Commits", "value": str(len(commits))},
-        {"label": "PRs opened", "value": str(len(prs))},
-        {"label": "PRs merged", "value": str(len(merged_prs))},
+        {"label": "Commits", "value": str(total_commits)},
+        {"label": f"{pr_label} opened", "value": str(len(prs) + (len(gl_mrs) if gitlab_enabled else 0))},
+        {"label": f"{pr_label} merged", "value": str(len(merged_items))},
         {"label": "Lines changed", "value": (
             f'<span class="add">+{additions_sum:,}</span> '
             f'<span class="sub">/</span> '
             f'<span class="del">−{deletions_sum:,}</span>'
         )},
-        {"label": "Reviews given", "value": str(len(reviews_list))},
-        {"label": "Issues closed", "value": str(len(issues_closed_list))},
+        {"label": "Reviews given", "value": str(len(review_items))},
+        {"label": "Issues closed", "value": str(len(issues_closed_items))},
         {"label": "Active days", "value": str(active_days)},
     ]
 
     start_label = start.strftime("%-d %b %Y")
     end_label = end.strftime("%-d %b %Y")
-    repo_names = sorted({p["repo"] for p in merged_prs})
+    repo_names = sorted({p["repo"] for p in merged_items})
     merged_subtitle = (
-        f"{len(merged_prs)} merged"
+        f"{len(merged_items)} merged"
         + (f" · {', '.join(repo_names)}" if repo_names else "")
     )
 
@@ -187,23 +313,49 @@ def main():
         html = f.read()
 
     if not orgs:
-        org_label = "all of GitHub"
+        gh_org_label = "all of GitHub"
         monthly_label = "Across every repository, including personal ones"
         footer_scope = f"author/committer:{handle} (no org filter)"
     elif len(orgs) == 1:
-        org_label = f"{orgs[0]} org"
+        gh_org_label = f"{orgs[0]} org"
         monthly_label = f"Across all {orgs[0]} repositories"
         footer_scope = f"org:{orgs[0]}, author/committer:{handle}"
     else:
-        org_label = f"{len(orgs)} orgs: {', '.join(orgs)}"
+        gh_org_label = f"{len(orgs)} orgs: {', '.join(orgs)}"
         monthly_label = f"Across {', '.join(orgs)}"
         footer_scope = " ".join(f"org:{o}" for o in orgs) + f", author/committer:{handle}"
 
+    if gitlab_enabled:
+        report_title = f"Activity — {handle}"
+        gl_scope_label = "all of GitLab" if gl_any else ', '.join(gl_groups)
+        report_subtitle = (
+            f"{handle} · GitHub: {gh_org_label} · GitLab: {gitlab_user}, {gl_scope_label} "
+            f"· {start_label} – {end_label}"
+        )
+        monthly_label += " and GitLab"
+        merged_card_title = "Merged PRs / MRs"
+        footer_text = (
+            f"Generated from the GitHub search &amp; REST APIs (<code>gh</code> CLI) scoped to "
+            f"{footer_scope}, and the GitLab REST API (<code>glab</code> CLI) scoped to "
+            f"gitlab user:{gitlab_user}, groups:{gl_scope_label}. Commit and PR/MR counts reflect "
+            f"only activity visible to the authenticated accounts' token scopes."
+        )
+    else:
+        report_title = f"GitHub Activity — {handle}"
+        report_subtitle = f"{handle} · {gh_org_label} · {start_label} – {end_label}"
+        merged_card_title = "Merged pull requests"
+        footer_text = (
+            f"Generated from the GitHub search &amp; REST APIs (<code>gh</code> CLI) scoped to "
+            f"{footer_scope}. Commit and PR counts reflect only activity visible to the "
+            f"authenticated account's token scopes."
+        )
+
     replacements = {
-        "__REPORT_TITLE__": f"GitHub Activity — {handle}",
-        "__REPORT_SUBTITLE__": f"{handle} · {org_label} · {start_label} – {end_label}",
+        "__REPORT_TITLE__": report_title,
+        "__REPORT_SUBTITLE__": report_subtitle,
         "__MONTHLY_SUBTITLE__": monthly_label,
-        "__REPO_SUBTITLE__": f"{len(commits)} commits across {len(repos)} repositories",
+        "__REPO_SUBTITLE__": f"{total_commits} commits across {len(repos)} repositories",
+        "__MERGED_CARD_TITLE__": merged_card_title,
         "__MERGED_SUBTITLE__": merged_subtitle,
         "__ACTIVE_DAYS_SUBTITLE__": (
             f"{active_days} distinct days with recorded activity, "
@@ -212,14 +364,15 @@ def main():
             f"11 statutory holidays ({WORKING_DAYS_PER_YEAR} days/year). "
             f"Categories overlap; the total counts each day once."
         ),
-        "__FOOTER_SCOPE__": footer_scope,
+        "__FOOTER_TEXT__": footer_text,
+        "__GITLAB_ENABLED__": "true" if gitlab_enabled else "false",
         "__MONTHS_JSON__": json.dumps(months),
         "__REPOS_JSON__": json.dumps(repos),
         "__STATS_JSON__": json.dumps(stats),
-        "__REVIEWS_JSON__": json.dumps(reviews_list),
-        "__ISSUES_OPENED_JSON__": json.dumps(issues_opened_list),
-        "__ISSUES_CLOSED_JSON__": json.dumps(issues_closed_list),
-        "__PRS_JSON__": json.dumps(merged_prs),
+        "__REVIEWS_JSON__": json.dumps(review_items),
+        "__ISSUES_OPENED_JSON__": json.dumps(issues_opened_items),
+        "__ISSUES_CLOSED_JSON__": json.dumps(issues_closed_items),
+        "__PRS_JSON__": json.dumps(merged_items),
         "__ACTIVE_DAYS_JSON__": json.dumps(active_day_rows),
     }
     for key, val in replacements.items():
