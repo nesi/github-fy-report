@@ -20,6 +20,13 @@
 #                   (subgroups included automatically), "all" (every
 #                   top-level group you belong to), or "any" (no group
 #                   filter). Omit this flag entirely to skip GitLab.
+#   --no-full-scan  Never run the full-org branch scan, even for an
+#                    annual-length window the recent-activity index can't
+#                    verify. Trades completeness for speed.
+#   --full-scan     Allow the full-org branch scan even for a short window
+#                   (default: only annual-length windows, >= 300 days, are
+#                   eligible — a routine monthly/quarterly report shouldn't
+#                   pay that cost automatically).
 #
 # Requires: gh (authenticated), python3, and glab (authenticated) if
 #           --gitlab-group is used.
@@ -41,11 +48,17 @@ usage() {
   echo "  --gitlab-group  comma-separated GitLab group list, 'all', or 'any'." >&2
   echo "                  Omit entirely to produce a GitHub-only report." >&2
   echo "  --gitlab-user   GitLab username, defaults to <github-handle>." >&2
+  echo "  --no-full-scan  never run the full-org branch scan, even for an" >&2
+  echo "                  annual-length window (see --full-scan)." >&2
+  echo "  --full-scan     allow the full-org branch scan for a short window too" >&2
+  echo "                  (default: only windows >= 300 days are eligible)." >&2
 }
 
 # --- arg parsing: pull the --gitlab-* flags out, leave positionals in place --
 GITLAB_USER=""
 GITLAB_GROUP=""
+NO_FULL_SCAN=false
+FORCE_FULL_SCAN=false
 POSITIONAL=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,6 +66,8 @@ while [ $# -gt 0 ]; do
     --gitlab-user) GITLAB_USER="${2:-}"; shift 2 ;;
     --gitlab-group=*) GITLAB_GROUP="${1#*=}"; shift ;;
     --gitlab-group) GITLAB_GROUP="${2:-}"; shift 2 ;;
+    --no-full-scan) NO_FULL_SCAN=true; shift ;;
+    --full-scan) FORCE_FULL_SCAN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
     -*) echo "Error: unknown flag '$1'" >&2; usage; exit 1 ;;
@@ -75,6 +90,11 @@ OUTPUT="${5:-}"
 if [ -z "$ORG_SCOPE" ]; then
   echo "Error: org-scope is required." >&2
   usage
+  exit 1
+fi
+
+if [ "$NO_FULL_SCAN" = true ] && [ "$FORCE_FULL_SCAN" = true ]; then
+  echo "Error: --no-full-scan and --full-scan contradict each other." >&2
   exit 1
 fi
 
@@ -247,6 +267,27 @@ if [ -z "$OUTPUT" ]; then
   OUTPUT="./github-report-${HANDLE}-${START}_${END}.html"
 fi
 
+# Full-org branch scanning is only worth its cost for an annual-length
+# window (the recurring FY report) — a routine monthly/quarterly report
+# shouldn't pay ~35x the API calls just because the recent-activity index
+# can't formally prove 90+ day coverage. 300 days comfortably separates
+# "basically a year" from "half a year or less"; --full-scan/--no-full-scan
+# override this in either direction.
+PERIOD_DAYS=$(python3 -c "
+from datetime import date
+print((date.fromisoformat('$END') - date.fromisoformat('$START')).days + 1)
+")
+FULL_SCAN_MIN_DAYS=300
+if [ "$FORCE_FULL_SCAN" = true ]; then
+  FULL_SCAN_ELIGIBLE=true
+elif [ "$NO_FULL_SCAN" = true ]; then
+  FULL_SCAN_ELIGIBLE=false
+elif [ "$PERIOD_DAYS" -ge "$FULL_SCAN_MIN_DAYS" ]; then
+  FULL_SCAN_ELIGIBLE=true
+else
+  FULL_SCAN_ELIGIBLE=false
+fi
+
 echo "Handle: $HANDLE" >&2
 echo "Orgs:   ${ORG_LIST:-<none - searching all of GitHub>}" >&2
 if [ "$GITLAB_ENABLED" = true ]; then
@@ -264,7 +305,7 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # --- GitHub fetches -----------------------------------------------------------
 echo "Fetching commits..." >&2
 gh api --paginate "search/commits?q=$(urlenc "author:$HANDLE$ORG_Q committer-date:$START..$END")&per_page=100" \
-  --jq '.items[] | {repo: .repository.full_name, date: .commit.committer.date}' \
+  --jq '.items[] | {repo: .repository.full_name, sha: .sha, date: .commit.committer.date}' \
   > "$WORKDIR/commits.jsonl"
 
 echo "Fetching PRs opened..." >&2
@@ -310,6 +351,162 @@ print(json.dumps(s))
       >> "$WORKDIR/pr_stats.jsonl" || true
   done
 fi
+
+# --- fill the default-branch-only gap in commit search ------------------------
+# search/commits only indexes each repo's default branch (confirmed against a
+# live repo, not assumed from docs): a commit sitting on a still-open PR branch,
+# a closed-but-unmerged branch, or squashed away at merge time is invisible to
+# it. Two extra passes close that, for every repo this handle is already known
+# to have touched (via the commits/PRs/reviews/issues already fetched above):
+#   1. Every branch still on the repo, filtered by author + date server-side.
+#   2. Every PR's own commit list, which GitHub keeps even after the PR's
+#      branch is deleted (catches deleted branches that branch-listing can't).
+# A commit with no PR ever opened on a branch that's since been deleted is the
+# one case genuinely unrecoverable via the API — see README caveats.
+CANDIDATE_REPOS_FILE="$WORKDIR/candidate_repos.txt"
+python3 -c '
+import json, sys
+seen = set()
+for path in sys.argv[1:]:
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    seen.add(json.loads(line)["repo"])
+    except FileNotFoundError:
+        pass
+for r in sorted(seen):
+    print(r)
+' "$WORKDIR/commits.jsonl" "$WORKDIR/prs.jsonl" "$WORKDIR/reviews.jsonl" \
+  "$WORKDIR/issues_opened.jsonl" "$WORKDIR/issues_closed.jsonl" \
+  > "$CANDIDATE_REPOS_FILE"
+
+# The above still can't discover a repo where this handle's *only* footprint
+# is a live, no-PR-ever branch — closing that means knowing about the repo at
+# all, which means either a short enough window that GitHub's own per-user
+# recent-activity index (/users/:handle/events) is provably complete for it,
+# or checking every repo in the org(s) outright. The index is capped at 90
+# days OR 300 events, whichever comes first, so "provably complete" is
+# checked against the actual data returned, not assumed from the date alone.
+echo "Checking recent-activity index coverage..." >&2
+gh api "users/$HANDLE/events?per_page=100" --paginate > "$WORKDIR/gh_events_raw.json" 2>/dev/null || echo "[]" > "$WORKDIR/gh_events_raw.json"
+EVENTS_REPOS_FILE="$WORKDIR/events_repos.txt"
+COVERAGE="$(python3 -c '
+import json, sys, datetime
+
+events_path, start_s, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+start = datetime.date.fromisoformat(start_s)
+today = datetime.date.today()
+retention_floor = today - datetime.timedelta(days=90)
+
+try:
+    with open(events_path) as f:
+        events = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    events = []
+
+repos = sorted({e["repo"]["name"] for e in events if e.get("repo", {}).get("name")})
+with open(out_path, "w") as f:
+    for r in repos:
+        f.write(r + "\n")
+
+if not events:
+    covered = start >= retention_floor
+else:
+    oldest = min(
+        datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00")).date()
+        for e in events
+    )
+    truncated = len(events) >= 300
+    covered = (oldest <= start) and not truncated
+
+print("covered" if covered else "not_covered")
+' "$WORKDIR/gh_events_raw.json" "$START" "$EVENTS_REPOS_FILE")"
+cat "$EVENTS_REPOS_FILE" >> "$CANDIDATE_REPOS_FILE"
+
+if [ "$COVERAGE" = "not_covered" ]; then
+  if [ "$FULL_SCAN_ELIGIBLE" = false ]; then
+    if [ "$NO_FULL_SCAN" = true ]; then
+      echo "  Window exceeds what the recent-activity index can verify (90 days / 300 events), and --no-full-scan was given — skipping the full-org scan. A repo touched only via a still-live, no-PR-ever branch outside that window may be missed." >&2
+    else
+      echo "  Window exceeds what the recent-activity index can verify, but is only $PERIOD_DAYS day(s) — short of the $FULL_SCAN_MIN_DAYS-day annual-report threshold, so skipping the full-org scan automatically. Pass --full-scan to run it anyway. A repo touched only via a still-live, no-PR-ever branch outside the index window may be missed." >&2
+    fi
+  elif [ ${#ORGS[@]} -eq 0 ]; then
+    echo "  Window exceeds what the recent-activity index can verify, and org-scope is 'any' — there's no concrete repo list to scan. A repo touched only via a still-live, no-PR-ever branch outside the index window may be missed." >&2
+  else
+    echo "  Window exceeds what the recent-activity index can verify — scanning every repo in ${ORGS[*]} for complete coverage. This can take a while." >&2
+    for o in "${ORGS[@]}"; do
+      gh api "orgs/$o/repos?per_page=100" --paginate --jq '.[].full_name' 2>/dev/null || true
+    done >> "$CANDIDATE_REPOS_FILE"
+  fi
+fi
+sort -u "$CANDIDATE_REPOS_FILE" -o "$CANDIDATE_REPOS_FILE"
+
+REPO_COUNT=$(wc -l < "$CANDIDATE_REPOS_FILE" | tr -d ' ')
+echo "Scanning all branches in $REPO_COUNT known repo(s) for additional commits..." >&2
+: > "$WORKDIR/commits_all_branches.jsonl"
+MAX_BRANCHES_PER_REPO=200
+if [ "$REPO_COUNT" -gt 0 ]; then
+  while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    BRANCHES=()
+    while IFS= read -r b; do
+      [ -n "$b" ] && BRANCHES+=("$b")
+    done < <(gh api "repos/$repo/branches?per_page=100" --paginate --jq '.[].name' 2>/dev/null || true)
+    TOTAL_BRANCHES=${#BRANCHES[@]}
+    if [ "$TOTAL_BRANCHES" -gt "$MAX_BRANCHES_PER_REPO" ]; then
+      echo "  $repo: $TOTAL_BRANCHES branches, capping at $MAX_BRANCHES_PER_REPO (skipping $((TOTAL_BRANCHES - MAX_BRANCHES_PER_REPO)))." >&2
+      BRANCHES=("${BRANCHES[@]:0:$MAX_BRANCHES_PER_REPO}")
+    fi
+    for b in ${BRANCHES[@]+"${BRANCHES[@]}"}; do
+      gh api --paginate "repos/$repo/commits?sha=$(urlenc "$b")&author=$(urlenc "$HANDLE")&since=${START}T00:00:00Z&until=${END}T23:59:59Z&per_page=100" \
+        --jq '.[] | {repo: "'"$repo"'", sha: .sha, date: .commit.committer.date}' 2>/dev/null \
+        >> "$WORKDIR/commits_all_branches.jsonl" || true
+    done
+  done < "$CANDIDATE_REPOS_FILE"
+fi
+
+echo "Fetching commits from PR branches (covers deleted or squash-merged branches)..." >&2
+if [ "$PR_COUNT" -gt 0 ]; then
+  python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line:
+        p = json.loads(line)
+        print(p["repo"], p["number"])
+' "$WORKDIR/prs.jsonl" | while read -r repo number; do
+    timeout 10 gh api --paginate "repos/$repo/pulls/$number/commits" \
+      --jq '.[] | {repo: "'"$repo"'", sha: .sha, date: .commit.committer.date}' 2>/dev/null \
+      >> "$WORKDIR/commits_all_branches.jsonl" || true
+  done
+fi
+
+echo "Merging and deduplicating discovered commits..." >&2
+python3 -c '
+import json, sys
+seen = set()
+out = []
+for path in sys.argv[1:-1]:
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                c = json.loads(line)
+                key = (c["repo"], c["sha"])
+                if key not in seen:
+                    seen.add(key)
+                    out.append({"repo": c["repo"], "date": c["date"]})
+    except FileNotFoundError:
+        pass
+with open(sys.argv[-1], "w") as f:
+    for c in out:
+        f.write(json.dumps(c) + "\n")
+' "$WORKDIR/commits.jsonl" "$WORKDIR/commits_all_branches.jsonl" "$WORKDIR/commits_merged.jsonl"
+mv "$WORKDIR/commits_merged.jsonl" "$WORKDIR/commits.jsonl"
 
 # --- GitLab fetches (only if requested) ---------------------------------------
 : > "$WORKDIR/gitlab_pushes_raw.jsonl"

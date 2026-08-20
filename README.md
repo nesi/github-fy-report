@@ -21,12 +21,13 @@ GitHub side; `glab api` has no `--jq` equivalent, so the GitLab side pipes throu
 ```
 ./github-fy-report.sh <github-handle> <org-scope> [start-date] [end-date] [output-file]
                        [--gitlab-user USER] [--gitlab-group SCOPE]
+                       [--full-scan | --no-full-scan]
 ```
 
 The five GitHub arguments are **positional** — to set a later one you must supply
-all earlier ones. The two `--gitlab-*` flags are optional and can go anywhere on
-the command line; omit `--gitlab-group` entirely for a GitHub-only report (the
-original, unchanged behaviour).
+all earlier ones. The flags are optional and can go anywhere on the command line;
+omit `--gitlab-group` entirely for a GitHub-only report (the original, unchanged
+behaviour).
 
 | Arg | Required | Default |
 |-----|----------|---------|
@@ -37,6 +38,14 @@ original, unchanged behaviour).
 | `output-file` | no | `./github-report-<handle>-<start>_<end>.html` |
 | `--gitlab-user` | no | same as `github-handle` |
 | `--gitlab-group` | no | GitLab is skipped entirely if omitted |
+| `--full-scan` | no | forces the full-org branch scan even for a window under 300 days |
+| `--no-full-scan` | no | forces the full-org branch scan off even for an annual-length window |
+
+Neither flag is needed for the common cases: a routine monthly or quarterly
+report never pays for the full-org scan, and the once-a-year FY report gets it
+automatically. They exist for the exceptions — forcing it on to double-check a
+short window, or off to keep a slow org fast when you don't need that level of
+completeness this time.
 
 Dates are ISO `YYYY-MM-DD`. The date range is inclusive.
 
@@ -244,7 +253,8 @@ counts once for `Commits`.
 ## Progress output
 
 Everything the script prints goes to stderr, so you can watch it and still redirect
-the report path cleanly. The PR line-count stage is the slow one — one API call per PR.
+the report path cleanly. The PR line-count and branch-scanning stages are the slow
+ones — roughly one API call per PR, and one per live branch per known repo.
 
 ```
 Checking org access...
@@ -257,9 +267,20 @@ Fetching reviews given...
 Fetching issues opened...
 Fetching issues closed...
 Fetching line-change stats for 42 PR(s)...
+Checking recent-activity index coverage...
+  Window exceeds what the recent-activity index can verify — scanning every repo in nesi for complete coverage. This can take a while.
+Scanning all branches in 284 known repo(s) for additional commits...
+Fetching commits from PR branches (covers deleted or squash-merged branches)...
+Merging and deduplicating discovered commits...
 Aggregating and rendering report...
 Report written to: ./github-report-USER_NAME-2025-07-01_2026-06-30.html
 ```
+
+The scan only runs at all when the window is annual-length (>= 300 days,
+overridable with `--full-scan`/`--no-full-scan`) *and* the index can't prove
+coverage on its own — a routine monthly or quarterly report stays fast
+either way, and the "Checking recent-activity index coverage..." line just
+won't be followed by a "scanning every repo" line for those.
 
 With `--gitlab-group`, a second block of GitLab-side steps runs after the GitHub
 fetches, and its own line-change stage at the end:
@@ -289,8 +310,44 @@ Fetching line-change stats for 5 GitLab MR(s)...
 - **`any` includes personal repos**, which usually inflates the numbers well past
   what a work report should claim.
 - **Private repos** only appear if your `gh` token can see them.
-- **Commits** are matched on *committer date*, not author date — rebases and
-  cherry-picks land in the month they were replayed.
+- **Commits are found several ways, merged and deduped by SHA**, because
+  GitHub's commit search only indexes each repo's *default branch* (confirmed
+  against a live repo — a commit sitting only on an open, closed-unmerged, or
+  squash-merged-away branch is invisible to it, otherwise):
+  1. `search/commits` on the default branch.
+  2. Every live branch of every repo the report already knows this handle
+     touched (via commits/PRs/reviews/issues), filtered server-side by author
+     and date.
+  3. Every PR's own commit list, which GitHub keeps even after its branch is
+     deleted.
+  4. `/users/<handle>/events`, capped at 90 days or 300 events (whichever
+     comes first) — used both as a bonus discovery signal and, if it
+     *provably* covers the whole requested window (the oldest event returned
+     is on or before the start date, and the 300-event cap wasn't hit), as
+     proof that steps 1–3 already found every repo worth scanning.
+  5. If step 4 can't prove full coverage, **and the requested window is at
+     least 300 days** (an FY report, not a routine monthly/quarterly one —
+     see `--full-scan`/`--no-full-scan` above), every repo in the org(s) in
+     scope gets scanned too — otherwise a repo touched *only* via a
+     still-live branch with no PR ever opened, more than ~90 days ago, would
+     never be discovered at all. This is the slow step: expect an eligible
+     window to add many minutes for an org with hundreds of repos, and it
+     isn't possible at all with `any` org-scope (there's no concrete repo
+     list to enumerate) regardless of window length.
+
+  This is already noticeably slower than the other fetches even without step
+  5 — expect it to add a minute or more for someone with lots of history —
+  and it can raise the commit count substantially versus counting the default
+  branch alone, especially in a repo that squash-merges small PRs (each PR's
+  individual commits are counted once via its PR commit list, even though
+  only one squashed commit ever lands on the default branch).
+  - A repo with more than 200 live branches has the rest skipped, logged as
+    `capping at 200 (skipping N)` — this is a soft cap, not silent truncation.
+  - **The one case still unrecoverable, even with the full-org scan:** a
+    commit on a branch that never had a PR opened and has since been deleted.
+    Nothing in the API retains a trace of it once that happens.
+  - Dates are still *committer date*, not author date — rebases and
+    cherry-picks land in the month they were replayed.
 - **Reviews** are found with `updated:` on the PR, not the date of the review
   itself. A PR reviewed in June but touched again in August can fall outside
   or inside the window unexpectedly.
