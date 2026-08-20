@@ -2,8 +2,8 @@
 
 Generates a self-contained HTML report of one person's activity across one or
 more GitHub orgs — and, optionally, GitLab groups — over a date range: commits
-per month, commits per repo, merged PRs/MRs with line counts, reviews given,
-and issues opened/closed.
+over time (bucketed by day, week, or month, whichever fits the period), commits
+per repo, merged PRs/MRs with line counts, reviews given, and issues opened/closed.
 
 ## Requirements
 
@@ -219,12 +219,29 @@ safe to email to a **pencil pusher** or attach to a performance review.
 Sections:
 
 - **Stat row** — commits, PRs/MRs opened, PRs/MRs merged, lines changed (+/−), reviews given, issues closed, active days
-- **Commits by month** — bar chart across the range (stacked GitHub/GitLab when GitLab is included)
+- **Commits by day/week/month** — bar chart across the range, bucketed to fit the
+  period (stacked GitHub/GitLab when GitLab is included) — see below
 - **Commits by repository** — ranked, org prefix stripped (GitLab rows tagged `[GitLab]` when included)
 - **Active days** — distinct days each kind of activity happened on
 - **Merged PRs/MRs** — title, repo, link, additions/deletions, platform (when GitLab is included)
 - **Reviews given** — PRs/MRs you reviewed that you did not author
 - **Issues** — opened and closed
+
+### Commits chart granularity
+
+"Commits by month" is only a useful chart over several months — a monthly or
+weekly report would show one or two bars and call it a day. The chart's bucket
+size adapts to the requested period instead:
+
+| Period length | Bucket | Label example |
+|---|---|---|
+| ≤ 14 days | day | `Mon 17` |
+| 15–60 days | week (7-day chunks from the start date, not calendar-aligned) | `03 Aug` (week starting) |
+| \> 60 days | month (unchanged from before) | `Aug 26` |
+
+The card title and table column header follow the chosen bucket ("Commits by
+day" / "by week" / "by month"). There's no flag for this — it's purely a
+function of `start-date`/`end-date`.
 
 ### Active days
 
