@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Generate an HTML activity report (commits, PRs, reviews, issues) for a
-# GitHub handle across one or more orgs over a date range, using the gh CLI.
+# Generate an HTML activity report (commits, PRs/MRs, reviews, issues) for a
+# handle across one or more GitHub orgs and, optionally, GitLab groups, over
+# a date range.
 #
 # Usage: github-fy-report.sh <github-handle> <org-scope> [start-date] [end-date] [output-file]
+#                             [--gitlab-user USER] [--gitlab-group SCOPE]
 #   org-scope    one of:
 #                  a comma-separated org list, e.g. "nesi,GenomicsAotearoa"
 #                  "all" - every org the authenticated user belongs to
@@ -13,22 +15,51 @@
 #                recently completed Jul-Jun financial year
 #   end-date     ISO date (YYYY-MM-DD), defaults to the end of that same FY
 #   output-file  defaults to ./github-report-<handle>-<start>_<end>.html
+#   --gitlab-user   GitLab username to report on. Defaults to <github-handle>.
+#   --gitlab-group  GitLab group scope: comma-separated group full paths
+#                   (subgroups included automatically), "all" (every
+#                   top-level group you belong to), or "any" (no group
+#                   filter). Omit this flag entirely to skip GitLab.
 #
-# Requires: gh (authenticated), python3
+# Requires: gh (authenticated), python3, and glab (authenticated) if
+#           --gitlab-group is used.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/github-fy-report.template.html"
+GITLAB_FETCH="$SCRIPT_DIR/github-fy-report-gitlab-fetch.py"
 
 usage() {
   echo "Usage: $(basename "$0") <github-handle> <org-scope> [start-date] [end-date] [output-file]" >&2
-  echo "  org-scope  comma-separated org list (e.g. nesi,GenomicsAotearoa)," >&2
-  echo "             'all' for every org you belong to, or" >&2
-  echo "             'any' for no org filter (includes personal repos)." >&2
+  echo "                        [--gitlab-user USER] [--gitlab-group SCOPE]" >&2
+  echo "  org-scope       comma-separated org list (e.g. nesi,GenomicsAotearoa)," >&2
+  echo "                  'all' for every org you belong to, or" >&2
+  echo "                  'any' for no org filter (includes personal repos)." >&2
   echo "  Dates are ISO (YYYY-MM-DD). Omit start/end to use the most recently" >&2
   echo "  completed Jul-Jun financial year." >&2
+  echo "  --gitlab-group  comma-separated GitLab group list, 'all', or 'any'." >&2
+  echo "                  Omit entirely to produce a GitHub-only report." >&2
+  echo "  --gitlab-user   GitLab username, defaults to <github-handle>." >&2
 }
+
+# --- arg parsing: pull the --gitlab-* flags out, leave positionals in place --
+GITLAB_USER=""
+GITLAB_GROUP=""
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --gitlab-user=*) GITLAB_USER="${1#*=}"; shift ;;
+    --gitlab-user) GITLAB_USER="${2:-}"; shift 2 ;;
+    --gitlab-group=*) GITLAB_GROUP="${1#*=}"; shift ;;
+    --gitlab-group) GITLAB_GROUP="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+    -*) echo "Error: unknown flag '$1'" >&2; usage; exit 1 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- ${POSITIONAL[@]+"${POSITIONAL[@]}"}
 
 if [ $# -lt 1 ]; then
   usage
@@ -64,7 +95,7 @@ urlenc() {
   python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
 }
 
-# --- resolve org scope -------------------------------------------------------
+# --- resolve GitHub org scope -----------------------------------------------
 # ORGS is the final list of orgs to search; empty means "no org filter".
 ORGS=()
 if [ "$ORG_SCOPE" = "any" ]; then
@@ -125,6 +156,78 @@ done
 # Comma-joined list handed to the renderer for prefix stripping and labels.
 ORG_LIST="$(IFS=,; echo "${ORGS[*]-}")"
 
+# --- resolve GitLab scope (only if requested) -------------------------------
+GITLAB_ENABLED=false
+GL_ANY=false
+GL_GROUPS=()
+GITLAB_UID=""
+
+if [ -n "$GITLAB_GROUP" ]; then
+  GITLAB_ENABLED=true
+  GITLAB_USER="${GITLAB_USER:-$HANDLE}"
+
+  if ! command -v glab >/dev/null 2>&1; then
+    echo "Error: --gitlab-group given but the glab CLI was not found." >&2
+    exit 1
+  fi
+  if ! glab auth status >/dev/null 2>&1; then
+    echo "Error: glab is not authenticated. Run 'glab auth login' first." >&2
+    exit 1
+  fi
+
+  echo "Resolving GitLab user '$GITLAB_USER'..." >&2
+  GITLAB_UID="$(glab api "users?username=$(urlenc "$GITLAB_USER")" 2>/dev/null | python3 "$GITLAB_FETCH" user-id)"
+  if [ -z "$GITLAB_UID" ]; then
+    echo "Error: no GitLab user found for username '$GITLAB_USER'." >&2
+    exit 1
+  fi
+
+  if [ "$GITLAB_GROUP" = "any" ]; then
+    GL_ANY=true
+    echo "GitLab scope: any (no group filter)" >&2
+  elif [ "$GITLAB_GROUP" = "all" ]; then
+    echo "Discovering top-level GitLab groups for $GITLAB_USER..." >&2
+    while IFS= read -r g; do
+      [ -n "$g" ] && GL_GROUPS+=("$g")
+    done < <(glab api "groups?per_page=100" --paginate --output ndjson 2>/dev/null | python3 "$GITLAB_FETCH" top-level-groups)
+    if [ ${#GL_GROUPS[@]} -eq 0 ]; then
+      echo "Error: 'all' found no top-level GitLab group memberships." >&2
+      exit 1
+    fi
+    echo "Found: ${GL_GROUPS[*]}" >&2
+  else
+    IFS=',' read -r -a RAW_GROUPS <<< "$GITLAB_GROUP"
+    for g in "${RAW_GROUPS[@]}"; do
+      g="$(echo "$g" | tr -d '[:space:]')"
+      [ -n "$g" ] && GL_GROUPS+=("$g")
+    done
+    if [ ${#GL_GROUPS[@]} -eq 0 ]; then
+      echo "Error: --gitlab-group '$GITLAB_GROUP' contained no usable group paths." >&2
+      exit 1
+    fi
+  fi
+
+  if [ "$GL_ANY" = false ]; then
+    echo "Checking GitLab group access..." >&2
+    GL_REACHABLE=()
+    for g in "${GL_GROUPS[@]}"; do
+      if glab api "groups/$(urlenc "$g")" >/dev/null 2>&1; then
+        GL_REACHABLE+=("$g")
+      else
+        echo "  Skipping '$g': not accessible with this token (no such group, or no access)." >&2
+      fi
+    done
+    if [ ${#GL_REACHABLE[@]} -eq 0 ]; then
+      echo "Error: none of the requested GitLab groups are accessible with this token." >&2
+      exit 1
+    fi
+    GL_GROUPS=("${GL_REACHABLE[@]}")
+  fi
+fi
+
+GL_GROUP_LIST="$(IFS=,; echo "${GL_GROUPS[*]-}")"
+
+# --- date range ---------------------------------------------------------------
 if [ -z "$START" ] || [ -z "$END" ]; then
   read -r DEFAULT_START DEFAULT_END < <(python3 -c "
 import datetime
@@ -146,11 +249,19 @@ fi
 
 echo "Handle: $HANDLE" >&2
 echo "Orgs:   ${ORG_LIST:-<none - searching all of GitHub>}" >&2
+if [ "$GITLAB_ENABLED" = true ]; then
+  if [ "$GL_ANY" = true ]; then
+    echo "GitLab: $GITLAB_USER, all of GitLab" >&2
+  else
+    echo "GitLab: $GITLAB_USER, groups: $GL_GROUP_LIST" >&2
+  fi
+fi
 echo "Period: $START .. $END" >&2
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
+# --- GitHub fetches -----------------------------------------------------------
 echo "Fetching commits..." >&2
 gh api --paginate "search/commits?q=$(urlenc "author:$HANDLE$ORG_Q committer-date:$START..$END")&per_page=100" \
   --jq '.items[] | {repo: .repository.full_name, date: .commit.committer.date}' \
@@ -200,8 +311,113 @@ print(json.dumps(s))
   done
 fi
 
+# --- GitLab fetches (only if requested) ---------------------------------------
+: > "$WORKDIR/gitlab_pushes_raw.jsonl"
+: > "$WORKDIR/gitlab_project_paths.jsonl"
+: > "$WORKDIR/gitlab_mrs_raw.jsonl"
+: > "$WORKDIR/gitlab_reviews_raw.jsonl"
+: > "$WORKDIR/gitlab_issues_opened_raw.jsonl"
+: > "$WORKDIR/gitlab_issues_closed_raw.jsonl"
+: > "$WORKDIR/gitlab_mr_stats.jsonl"
+
+if [ "$GITLAB_ENABLED" = true ]; then
+  if [ "$GL_ANY" = false ]; then
+    echo "Resolving GitLab project scope..." >&2
+    : > "$WORKDIR/gitlab_allowed_ids.txt"
+    for g in "${GL_GROUPS[@]}"; do
+      glab api "groups/$(urlenc "$g")/projects?include_subgroups=true&simple=true&per_page=100" \
+          --paginate --output ndjson 2>/dev/null \
+        | python3 "$GITLAB_FETCH" project-ids >> "$WORKDIR/gitlab_allowed_ids.txt" || true
+    done
+  fi
+
+  echo "Fetching GitLab push events..." >&2
+  glab api "users/$GITLAB_UID/events?after=$START&before=$END&per_page=100" --paginate --output ndjson 2>/dev/null \
+    | python3 "$GITLAB_FETCH" pushes > "$WORKDIR/gitlab_pushes_raw.jsonl" || true
+
+  echo "Resolving GitLab project paths for push events..." >&2
+  if [ -s "$WORKDIR/gitlab_pushes_raw.jsonl" ]; then
+    python3 -c '
+import json, sys
+seen = set()
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line:
+        seen.add(json.loads(line)["project_id"])
+for pid in sorted(seen):
+    print(pid)
+' "$WORKDIR/gitlab_pushes_raw.jsonl" | while read -r pid; do
+      timeout 10 glab api "projects/$pid" 2>/dev/null \
+        | python3 "$GITLAB_FETCH" project-path \
+        | python3 -c 'import json, sys; path = sys.stdin.read().strip(); path and print(json.dumps({"project_id": int(sys.argv[1]), "path": path}))' "$pid" \
+        >> "$WORKDIR/gitlab_project_paths.jsonl" || true
+    done
+  fi
+
+  if [ "$GL_ANY" = true ]; then
+    BASES=("")
+  else
+    BASES=()
+    for g in "${GL_GROUPS[@]}"; do BASES+=("groups/$(urlenc "$g")/"); done
+  fi
+
+  echo "Fetching GitLab MRs opened..." >&2
+  for base in "${BASES[@]}"; do
+    glab api "${base}merge_requests?author_username=$(urlenc "$GITLAB_USER")&scope=all&state=all&created_after=$START&created_before=$END&per_page=100" \
+        --paginate --output ndjson 2>/dev/null \
+      | python3 "$GITLAB_FETCH" mr >> "$WORKDIR/gitlab_mrs_raw.jsonl" || true
+  done
+
+  echo "Fetching GitLab reviews given..." >&2
+  for base in "${BASES[@]}"; do
+    glab api "${base}merge_requests?reviewer_username=$(urlenc "$GITLAB_USER")&scope=all&state=all&updated_after=$START&updated_before=$END&per_page=100" \
+        --paginate --output ndjson 2>/dev/null \
+      | python3 "$GITLAB_FETCH" mr >> "$WORKDIR/gitlab_reviews_raw.jsonl" || true
+  done
+
+  echo "Fetching GitLab issues opened..." >&2
+  for base in "${BASES[@]}"; do
+    glab api "${base}issues?author_username=$(urlenc "$GITLAB_USER")&created_after=$START&created_before=$END&per_page=100" \
+        --paginate --output ndjson 2>/dev/null \
+      | python3 "$GITLAB_FETCH" issue >> "$WORKDIR/gitlab_issues_opened_raw.jsonl" || true
+  done
+
+  echo "Fetching GitLab issues closed..." >&2
+  for base in "${BASES[@]}"; do
+    glab api "${base}issues?author_username=$(urlenc "$GITLAB_USER")&state=closed&updated_after=$START&updated_before=$END&per_page=100" \
+        --paginate --output ndjson 2>/dev/null \
+      | python3 "$GITLAB_FETCH" issue >> "$WORKDIR/gitlab_issues_closed_raw.jsonl" || true
+    glab api "${base}issues?assignee_username=$(urlenc "$GITLAB_USER")&state=closed&updated_after=$START&updated_before=$END&per_page=100" \
+        --paginate --output ndjson 2>/dev/null \
+      | python3 "$GITLAB_FETCH" issue >> "$WORKDIR/gitlab_issues_closed_raw.jsonl" || true
+  done
+
+  MR_COUNT=$(wc -l < "$WORKDIR/gitlab_mrs_raw.jsonl" | tr -d ' ')
+  echo "Fetching line-change stats for $MR_COUNT GitLab MR(s)..." >&2
+  if [ "$MR_COUNT" -gt 0 ]; then
+    python3 -c '
+import json, sys
+seen = set()
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    if m.get("merged_at"):
+        seen.add((m["project_id"], m["iid"]))
+for pid, iid in sorted(seen):
+    print(pid, iid)
+' "$WORKDIR/gitlab_mrs_raw.jsonl" | while read -r pid iid; do
+      timeout 10 glab api "projects/$pid/merge_requests/$iid/changes" 2>/dev/null \
+        | python3 "$GITLAB_FETCH" diffstat "$pid" "$iid" \
+        >> "$WORKDIR/gitlab_mr_stats.jsonl" || true
+    done
+  fi
+fi
+
 echo "Aggregating and rendering report..." >&2
 python3 "$SCRIPT_DIR/github-fy-report-render.py" \
-  "$WORKDIR" "$TEMPLATE" "$OUTPUT" "$HANDLE" "$ORG_LIST" "$START" "$END"
+  "$WORKDIR" "$TEMPLATE" "$OUTPUT" "$HANDLE" "$ORG_LIST" "$START" "$END" \
+  "$GITLAB_ENABLED" "$GITLAB_USER" "$GL_GROUP_LIST" "$GL_ANY"
 
 echo "Report written to: $OUTPUT" >&2
