@@ -56,6 +56,16 @@ def cmd_pushes():
                 "project_id": e["project_id"],
                 "date": e["created_at"],
                 "count": pd["commit_count"],
+                # A brand-new branch has no "before" state to diff against
+                # (commit_from is null), so GitLab's commit_count for it can
+                # reflect the branch's whole reachable history rather than
+                # just the commits this push actually introduced — wildly
+                # overcounting when the branch's base has drifted from the
+                # server's current history. action/ref let the shell script
+                # cross-check these specifically against the matching MR's
+                # own (reliable) commit list.
+                "action": pd.get("action"),
+                "ref": pd.get("ref"),
             }))
 
 
@@ -70,6 +80,7 @@ def cmd_mr():
             "merged_at": m.get("merged_at"),
             "state": m["state"],
             "author": (m.get("author") or {}).get("username"),
+            "source_branch": m.get("source_branch"),
         }))
 
 
@@ -85,6 +96,21 @@ def cmd_issue():
             "updated_at": i.get("updated_at"),
             "closed_at": i.get("closed_at"),
         }))
+
+
+def cmd_mr_commit_count(project_id, iid):
+    """Ground truth for a "created"-branch push: how many commits this MR
+    actually contains, per GitLab's own merge-base-aware commit list —
+    unaffected by the push-event commit_count quirk above."""
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return
+    print(json.dumps({
+        "project_id": int(project_id),
+        "iid": int(iid),
+        "count": len(data) if isinstance(data, list) else 0,
+    }))
 
 
 def cmd_diffstat(project_id, iid):
@@ -115,6 +141,7 @@ COMMANDS = {
     "pushes": lambda args: cmd_pushes(),
     "mr": lambda args: cmd_mr(),
     "issue": lambda args: cmd_issue(),
+    "mr-commit-count": lambda args: cmd_mr_commit_count(*args),
     "diffstat": lambda args: cmd_diffstat(*args),
 }
 

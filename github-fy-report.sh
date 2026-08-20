@@ -610,6 +610,74 @@ for pid, iid in sorted(seen):
         >> "$WORKDIR/gitlab_mr_stats.jsonl" || true
     done
   fi
+
+  # A brand-new branch has no prior state to diff against (commit_from is
+  # null), so its push event's commit_count can reflect the whole branch's
+  # reachable history rather than the commits it actually introduced — badly
+  # overcounting when the branch's base has drifted from the server's
+  # current history (confirmed against a real account: a one-commit fix
+  # reported as 654 "commits"). Where such a push matches a known MR by
+  # (project, source branch), the MR's own commit list is ground truth —
+  # GitLab computes it merge-base-aware, immune to this quirk — and replaces
+  # the push event's count.
+  echo "Correcting new-branch push counts against their MR's real commit list..." >&2
+  python3 -c '
+import json, sys
+pushes = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+mrs = [json.loads(l) for l in open(sys.argv[2]) if l.strip()]
+mr_by_branch = {
+    (m["project_id"], m["source_branch"]): m["iid"]
+    for m in mrs if m.get("source_branch")
+}
+seen = set()
+for p in pushes:
+    if p.get("action") == "created" and p.get("ref"):
+        iid = mr_by_branch.get((p["project_id"], p["ref"]))
+        if iid is not None:
+            seen.add((p["project_id"], iid))
+for pid, iid in sorted(seen):
+    print(pid, iid)
+' "$WORKDIR/gitlab_pushes_raw.jsonl" "$WORKDIR/gitlab_mrs_raw.jsonl" \
+    > "$WORKDIR/gitlab_created_push_mrs.txt"
+
+  : > "$WORKDIR/gitlab_mr_commit_counts.jsonl"
+  while read -r pid iid; do
+    [ -z "$pid" ] && continue
+    timeout 10 glab api "projects/$pid/merge_requests/$iid/commits?per_page=100" --paginate 2>/dev/null \
+      | python3 "$GITLAB_FETCH" mr-commit-count "$pid" "$iid" \
+      >> "$WORKDIR/gitlab_mr_commit_counts.jsonl" || true
+  done < "$WORKDIR/gitlab_created_push_mrs.txt"
+
+  python3 -c '
+import json, sys
+counts = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if line:
+        c = json.loads(line)
+        counts[(c["project_id"], c["iid"])] = c["count"]
+mrs = [json.loads(l) for l in open(sys.argv[2]) if l.strip()]
+mr_by_branch = {
+    (m["project_id"], m["source_branch"]): m["iid"]
+    for m in mrs if m.get("source_branch")
+}
+out = []
+for line in open(sys.argv[3]):
+    line = line.strip()
+    if not line:
+        continue
+    p = json.loads(line)
+    if p.get("action") == "created" and p.get("ref"):
+        iid = mr_by_branch.get((p["project_id"], p["ref"]))
+        if iid is not None and (p["project_id"], iid) in counts:
+            p["count"] = counts[(p["project_id"], iid)]
+    out.append(p)
+with open(sys.argv[4], "w") as f:
+    for p in out:
+        f.write(json.dumps(p) + "\n")
+' "$WORKDIR/gitlab_mr_commit_counts.jsonl" "$WORKDIR/gitlab_mrs_raw.jsonl" \
+    "$WORKDIR/gitlab_pushes_raw.jsonl" "$WORKDIR/gitlab_pushes_corrected.jsonl"
+  mv "$WORKDIR/gitlab_pushes_corrected.jsonl" "$WORKDIR/gitlab_pushes_raw.jsonl"
 fi
 
 echo "Aggregating and rendering report..." >&2

@@ -313,6 +313,7 @@ Fetching GitLab reviews given...
 Fetching GitLab issues opened...
 Fetching GitLab issues closed...
 Fetching line-change stats for 5 GitLab MR(s)...
+Correcting new-branch push counts against their MR's real commit list...
 ```
 
 ## Caveats
@@ -398,6 +399,18 @@ side works, but with some real gaps worth knowing about:
   multi-commit push lands as one bucketed count on one day, not several. This
   is the same *kind* of imprecision as GitHub's committer-date caveat above, just
   coarser.
+  - **A brand-new branch's commit_count can be badly wrong**, and is corrected
+    where possible. A `created`-branch push (`commit_from: null`) has no prior
+    state for GitLab to diff against, so `commit_count` can reflect that
+    branch's whole reachable history rather than the commits the push actually
+    introduced — confirmed against a real account, where a one-commit fix was
+    reported as 654 "commits" (the branch's base had drifted from the server's
+    current history). The fix: for any such push that matches a known MR by
+    project + source branch, the MR's own commit list — which GitLab computes
+    merge-base-aware, unaffected by this quirk — replaces the push's count.
+    A `created`-branch push with **no MR ever opened for it** has no ground
+    truth to cross-check against and keeps whatever GitLab reported; this is
+    the one remaining case where the count could still be wrong.
 - **`--gitlab-group` scoping only restricts commits/pushes; MRs and issues are
   restricted at the API level** by querying `groups/:id/merge_requests` and
   `groups/:id/issues` directly (which already cover subgroups), so those are
