@@ -4,9 +4,10 @@ github-fy-report.sh into the HTML template.
 
 Invoked by github-fy-report.sh — not meant to be run standalone.
 """
+import calendar
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 
 def load_jsonl(path):
@@ -42,16 +43,52 @@ def day_of(ts):
     return ts[:10] if len(ts) >= 10 else None
 
 
-def month_range(start, end):
-    y, m = start.year, start.month
-    out = []
-    while (y, m) <= (end.year, end.month):
-        out.append((y, m))
-        m += 1
-        if m == 13:
-            m = 1
-            y += 1
-    return out
+def choose_granularity(period_days):
+    """"Commits by month" is only a useful chart when the period spans
+    several months; a monthly or weekly report needs finer buckets to show
+    any shape at all."""
+    if period_days <= 14:
+        return "day"
+    if period_days <= 60:
+        return "week"
+    return "month"
+
+
+def build_buckets(start, end, granularity):
+    """Contiguous, labelled date-range buckets spanning [start, end]."""
+    buckets = []
+    if granularity == "month":
+        y, m = start.year, start.month
+        while (y, m) <= (end.year, end.month):
+            b_start = date(y, m, 1)
+            b_end = date(y, m, calendar.monthrange(y, m)[1])
+            buckets.append({"label": b_start.strftime("%b %y"), "start": b_start, "end": b_end})
+            m += 1
+            if m == 13:
+                m = 1
+                y += 1
+    elif granularity == "week":
+        cur = start
+        while cur <= end:
+            b_end = min(cur + timedelta(days=6), end)
+            buckets.append({"label": cur.strftime("%d %b"), "start": cur, "end": b_end})
+            cur += timedelta(days=7)
+    else:
+        cur = start
+        while cur <= end:
+            buckets.append({"label": cur.strftime("%a %d"), "start": cur, "end": cur})
+            cur += timedelta(days=1)
+    return buckets
+
+
+def date_to_bucket_index(buckets):
+    index = {}
+    for i, b in enumerate(buckets):
+        d = b["start"]
+        while d <= b["end"]:
+            index[d] = i
+            d += timedelta(days=1)
+    return index
 
 
 def repo_path_from_web_url(url):
@@ -228,18 +265,25 @@ def main():
         ]
         issues_closed_items = dedupe(issues_closed_items, key=lambda i: (i["platform"], i["repo"], i["number"]))
 
-    # --- months (per-platform, for the stacked chart) --------------------------
-    buckets = {ym: {"github": 0, "gitlab": 0} for ym in month_range(start, end)}
+    # --- commit buckets (day/week/month, per-platform, for the stacked chart) --
+    # "Commits by month" only reads as a chart over a span of several months;
+    # a shorter report gets finer buckets so there's still a shape to see.
+    period_days = (end - start).days + 1
+    granularity = choose_granularity(period_days)
+    bucket_defs = build_buckets(start, end, granularity)
+    bucket_index = date_to_bucket_index(bucket_defs)
+    bucket_counts = [{"github": 0, "gitlab": 0} for _ in bucket_defs]
     for c in commit_rows:
         d = datetime.fromisoformat(c["date"].replace("Z", "+00:00")).date()
-        ym = (d.year, d.month)
-        if ym in buckets:
-            buckets[ym][c["platform"]] += c["count"]
-    months = [
-        {"label": date(y, m, 1).strftime("%b %y"), "github": buckets[(y, m)]["github"],
-         "gitlab": buckets[(y, m)]["gitlab"]}
-        for (y, m) in sorted(buckets)
+        i = bucket_index.get(d)
+        if i is not None:
+            bucket_counts[i][c["platform"]] += c["count"]
+    commit_buckets = [
+        {"label": b["label"], "github": counts["github"], "gitlab": counts["gitlab"]}
+        for b, counts in zip(bucket_defs, bucket_counts)
     ]
+    commits_card_title = f"Commits by {granularity}"
+    commits_table_col = granularity.capitalize()
 
     # --- repos by commit count --------------------------------------------------
     repo_counts = {}
@@ -276,7 +320,6 @@ def main():
         all_active_days |= v
     active_days = len(all_active_days)
 
-    period_days = (end - start).days + 1
     WORKING_DAYS_PER_YEAR = (52 - 4) * 5 - 11
     working_days = round(period_days * WORKING_DAYS_PER_YEAR / 365) if period_days else 0
     active_pct = round(100 * active_days / working_days) if working_days else 0
@@ -354,6 +397,7 @@ def main():
         "__REPORT_TITLE__": report_title,
         "__REPORT_SUBTITLE__": report_subtitle,
         "__MONTHLY_SUBTITLE__": monthly_label,
+        "__COMMITS_CARD_TITLE__": commits_card_title,
         "__REPO_SUBTITLE__": f"{total_commits} commits across {len(repos)} repositories",
         "__MERGED_CARD_TITLE__": merged_card_title,
         "__MERGED_SUBTITLE__": merged_subtitle,
@@ -366,7 +410,8 @@ def main():
         ),
         "__FOOTER_TEXT__": footer_text,
         "__GITLAB_ENABLED__": "true" if gitlab_enabled else "false",
-        "__MONTHS_JSON__": json.dumps(months),
+        "__COMMIT_BUCKETS_JSON__": json.dumps(commit_buckets),
+        "__COMMITS_TABLE_COL_JSON__": json.dumps(commits_table_col),
         "__REPOS_JSON__": json.dumps(repos),
         "__STATS_JSON__": json.dumps(stats),
         "__REVIEWS_JSON__": json.dumps(review_items),

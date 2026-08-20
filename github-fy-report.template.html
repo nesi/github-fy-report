@@ -328,7 +328,7 @@
   <div style="height:20px"></div>
 
   <div class="card">
-    <h2>Commits by month</h2>
+    <h2>__COMMITS_CARD_TITLE__</h2>
     <div class="subtitle">__MONTHLY_SUBTITLE__</div>
     <div class="chart-legend" id="monthLegend" style="display:none"></div>
     <div class="bars-wrap">
@@ -395,7 +395,8 @@
 
 <script>
 (function () {
-  const months = __MONTHS_JSON__;
+  const buckets = __COMMIT_BUCKETS_JSON__;
+  const bucketUnit = __COMMITS_TABLE_COL_JSON__;
   const repos = __REPOS_JSON__;
   const stats = __STATS_JSON__;
   const reviews = __REVIEWS_JSON__;
@@ -429,9 +430,10 @@
     </div>
   `).join('');
 
-  // monthly bar chart (stacked GitHub/GitLab segments when GitLab is enabled)
+  // commits bar chart — bucketed by day/week/month depending on report length,
+  // stacked into GitHub/GitLab segments when GitLab is enabled
   const monthTotal = m => m.github + m.gitlab;
-  const maxCount = Math.max(1, ...months.map(monthTotal));
+  const maxCount = Math.max(1, ...buckets.map(monthTotal));
   const niceMax = Math.ceil(maxCount / 15) * 15 || 15;
   const steps = 4;
   const gridlines = document.getElementById('gridlines');
@@ -453,7 +455,7 @@
   }
 
   const monthBars = document.getElementById('monthBars');
-  monthBars.innerHTML = months.map(m => {
+  monthBars.innerHTML = buckets.map(m => {
     const total = monthTotal(m);
     const isPeak = total === maxCount && maxCount > 0;
     const ghPct = niceMax ? (m.github / niceMax) * 100 : 0;
@@ -470,7 +472,7 @@
       </div>
     </div>`;
   }).join('');
-  document.getElementById('monthLabels').innerHTML = months.map(m => `<span>${esc(m.label)}</span>`).join('');
+  document.getElementById('monthLabels').innerHTML = buckets.map(m => `<span>${esc(m.label)}</span>`).join('');
 
   monthBars.querySelectorAll('.bar-stack').forEach(stack => {
     stack.addEventListener('mouseenter', () => showTooltip(stack, stack.dataset.tip));
@@ -478,11 +480,11 @@
   });
 
   document.getElementById('monthTable').innerHTML = gitlabEnabled ? `
-    <thead><tr><th>Month</th><th>GitHub</th><th>GitLab</th><th>Total</th></tr></thead>
-    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${m.github}</td><td>${m.gitlab}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>${esc(bucketUnit)}</th><th>GitHub</th><th>GitLab</th><th>Total</th></tr></thead>
+    <tbody>${buckets.map(m => `<tr><td>${esc(m.label)}</td><td>${m.github}</td><td>${m.gitlab}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
   ` : `
-    <thead><tr><th>Month</th><th>Commits</th></tr></thead>
-    <tbody>${months.map(m => `<tr><td>${esc(m.label)}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>${esc(bucketUnit)}</th><th>Commits</th></tr></thead>
+    <tbody>${buckets.map(m => `<tr><td>${esc(m.label)}</td><td>${monthTotal(m)}</td></tr>`).join('')}</tbody>
   `;
 
   // repo bar chart
