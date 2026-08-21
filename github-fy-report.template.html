@@ -81,7 +81,7 @@
   }
   .card .subtitle {
     font-size: 0.8rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     margin: -12px 0 16px;
   }
 
@@ -187,7 +187,7 @@
   .chart-legend .swatch.gitlab { background: var(--series-2); }
   .platform-tag {
     font-size: 0.72rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
   }
   .month-labels {
     display: flex;
@@ -268,7 +268,7 @@
     border-bottom: 1px solid var(--gridline);
     font-variant-numeric: tabular-nums;
   }
-  details.table-toggle th { color: var(--text-muted); font-weight: 600; }
+  details.table-toggle th { color: var(--text-secondary); font-weight: 600; }
 
   /* PR table */
   .pr-table-scroll { max-height: 420px; overflow-y: auto; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
@@ -278,7 +278,7 @@
     background: var(--surface-1);
     text-align: left;
     padding: 8px 10px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-weight: 600;
     border-bottom: 1px solid var(--border);
     font-size: 0.72rem;
@@ -291,7 +291,7 @@
     vertical-align: top;
   }
   table.pr-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-secondary); }
-  table.pr-table td.repo { color: var(--text-muted); white-space: nowrap; }
+  table.pr-table td.repo { color: var(--text-secondary); white-space: nowrap; }
   table.pr-table a { color: var(--series-1); text-decoration: none; }
   table.pr-table a:hover { text-decoration: underline; }
   .add { color: var(--success); }
@@ -313,7 +313,7 @@
 
   footer.report-footer {
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     margin-top: 8px;
   }
 </style>
@@ -537,9 +537,9 @@
 
   document.getElementById('issuesList').innerHTML = `
     <li><strong>${issuesOpened.length} opened</strong></li>
-    ${issuesOpened.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc(i.state)})</span></li>`).join('')}
+    ${issuesOpened.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-secondary)">(${esc(i.state)})</span></li>`).join('')}
     <li style="margin-top:10px"><strong>${issuesClosed.length} closed</strong></li>
-    ${issuesClosed.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-muted)">(${esc((i.closed_at || '').slice(0, 10))})</span></li>`).join('')}
+    ${issuesClosed.map(i => `<li style="margin-left:8px">${platformTag(i.platform)}${esc(i.repo || '')}${refOf(i)} ${esc(i.title)} <span style="color:var(--text-secondary)">(${esc((i.closed_at || '').slice(0, 10))})</span></li>`).join('')}
   `;
 
   // PR/MR table
