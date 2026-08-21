@@ -436,9 +436,33 @@ if [ "$COVERAGE" = "not_covered" ]; then
     echo "  Window exceeds what the recent-activity index can verify, and org-scope is 'any' — there's no concrete repo list to scan. A repo touched only via a still-live, no-PR-ever branch outside the index window may be missed." >&2
   else
     echo "  Window exceeds what the recent-activity index can verify — scanning every repo in ${ORGS[*]} for complete coverage. This can take a while." >&2
+    : > "$WORKDIR/org_repos_raw.jsonl"
     for o in "${ORGS[@]}"; do
-      gh api "orgs/$o/repos?per_page=100" --paginate --jq '.[].full_name' 2>/dev/null || true
-    done >> "$CANDIDATE_REPOS_FILE"
+      gh api "orgs/$o/repos?per_page=100" --paginate --jq '.[] | {full_name, pushed_at}' 2>/dev/null || true
+    done >> "$WORKDIR/org_repos_raw.jsonl"
+    # A repo not pushed to (on any branch) since before the window opened
+    # cannot contain a commit inside it — pushed_at already covers every
+    # branch, not just the default one, so this is a free, lossless filter
+    # (no extra API calls; the field comes back in the listing above).
+    python3 -c '
+import json, sys
+start = sys.argv[1]
+total = fresh = 0
+names = []
+for line in open(sys.argv[2]):
+    line = line.strip()
+    if not line:
+        continue
+    r = json.loads(line)
+    total += 1
+    if (r.get("pushed_at") or "") >= start:
+        fresh += 1
+        names.append(r["full_name"])
+for name in names:
+    print(name)
+print(f"  {fresh} of {total} repos pushed to on/after {start}; skipping "
+      f"{total - fresh} with no activity since before the window.", file=sys.stderr)
+' "$START" "$WORKDIR/org_repos_raw.jsonl" >> "$CANDIDATE_REPOS_FILE"
   fi
 fi
 sort -u "$CANDIDATE_REPOS_FILE" -o "$CANDIDATE_REPOS_FILE"
