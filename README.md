@@ -286,7 +286,8 @@ Fetching issues closed...
 Fetching line-change stats for 42 PR(s)...
 Checking recent-activity index coverage...
   Window exceeds what the recent-activity index can verify — scanning every repo in nesi for complete coverage. This can take a while.
-Scanning all branches in 284 known repo(s) for additional commits...
+  67 of 284 repos pushed to on/after 2025-07-01; skipping 217 with no activity since before the window.
+Scanning all branches in 67 known repo(s) for additional commits...
 Fetching commits from PR branches (covers deleted or squash-merged branches)...
 Merging and deduplicating discovered commits...
 Aggregating and rendering report...
@@ -348,10 +349,16 @@ Correcting new-branch push counts against their MR's real commit list...
      see `--full-scan`/`--no-full-scan` above), every repo in the org(s) in
      scope gets scanned too — otherwise a repo touched *only* via a
      still-live branch with no PR ever opened, more than ~90 days ago, would
-     never be discovered at all. This is the slow step: expect an eligible
-     window to add many minutes for an org with hundreds of repos, and it
-     isn't possible at all with `any` org-scope (there's no concrete repo
-     list to enumerate) regardless of window length.
+     never be discovered at all. Repos not pushed to (on *any* branch) since
+     before the window opened are skipped first — that's a free filter, since
+     `pushed_at` comes back in the same repo listing at no extra API cost,
+     and a repo that quiet cannot contain a commit in the window on any
+     branch. Logged as `N of M repos pushed to on/after <date>`, never
+     silently. On `nesi` this cut a 284-repo scan down to 67. This is still
+     the slow step for whatever remains: expect an eligible window to add
+     minutes to tens of minutes depending on how much of the org is actually
+     live, and it isn't possible at all with `any` org-scope (there's no
+     concrete repo list to enumerate) regardless of window length.
 
   This is already noticeably slower than the other fetches even without step
   5 — expect it to add a minute or more for someone with lots of history —
